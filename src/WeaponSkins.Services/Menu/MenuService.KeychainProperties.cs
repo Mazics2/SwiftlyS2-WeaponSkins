@@ -1,5 +1,8 @@
-using SwiftlyS2.Core.Menus.OptionsBase;
-using SwiftlyS2.Shared.Menus;
+using System.Globalization;
+
+using PanoramaHud.Contract;
+
+using SwiftlyS2.Shared;
 using SwiftlyS2.Shared.Players;
 
 using WeaponSkins.Shared;
@@ -8,140 +11,185 @@ namespace WeaponSkins;
 
 public partial class MenuService
 {
-    public IMenuAPI BuildKeychainPropertiesMenu(IPlayer player,
-        WeaponSkinData data,
-        int slot)
+    public void OpenKeychainPropertiesMenu(IPlayer player, int slot)
     {
-        var main = Core.MenusAPI.CreateBuilder();
-        main.Design.SetMenuTitle(LocalizationService[player].MenuTitleKeychainProperties);
-
-        var keychain = data.GetKeychain(slot);
-        if (keychain == null) return main.Build();
-
-        var seedOption = new InputMenuOption(
-            LocalizationService[player].MenuSkinPropertiesSeed,
-            validator: (value) =>
-            {
-                if (int.TryParse(value, out var result))
-                {
-                    return result >= 0;
-                }
-
-                return false;
-            }
-        );
-        seedOption.SetValue(player, keychain.Seed.ToString());
-        seedOption.ValueChanged += (_,
-            args) =>
-        {
-            var value = int.Parse(args.NewValue);
-            Api.UpdateWeaponSkin(data.SteamID, data.Team, data.DefinitionIndex, skin =>
-            {
-                skin.GetKeychain(slot)?.Seed = value;
-            }, true);
-        };
-        main.AddOption(seedOption);
-
-        var offsetXOption = new InputMenuOption(
-            LocalizationService[player].MenuKeychainPropertiesOffsetX,
-            validator: (value) =>
-            {
-                if (float.TryParse(value, out var result))
-                {
-                    return float.IsFinite(result);
-                }
-
-                return false;
-            }
-        );
-        offsetXOption.SetValue(player, keychain.OffsetX.ToString());
-        offsetXOption.ValueChanged += (_,
-            args) =>
-        {
-            var value = float.Parse(args.NewValue);
-            Api.UpdateWeaponSkin(data.SteamID, data.Team, data.DefinitionIndex, skin =>
-            {
-                skin.GetKeychain(slot)?.OffsetX = value;
-            }, true);
-        };
-        main.AddOption(offsetXOption);
-
-        var offsetYOption = new InputMenuOption(
-            LocalizationService[player].MenuKeychainPropertiesOffsetY,
-            validator: (value) =>
-            {
-                if (float.TryParse(value, out var result))
-                {
-                    return float.IsFinite(result);
-                }
-
-                return false;
-            }
-        );
-        offsetYOption.SetValue(player, keychain.OffsetY.ToString());
-        offsetYOption.ValueChanged += (_,
-            args) =>
-        {
-            var value = float.Parse(args.NewValue);
-            Api.UpdateWeaponSkin(data.SteamID, data.Team, data.DefinitionIndex, skin =>
-            {
-                skin.GetKeychain(slot)?.OffsetY = value;
-            }, true);
-        };
-        main.AddOption(offsetYOption);
-
-        var offsetZOption = new InputMenuOption(
-            LocalizationService[player].MenuKeychainPropertiesOffsetZ,
-            validator: (value) =>
-            {
-                if (float.TryParse(value, out var result))
-                {
-                    return float.IsFinite(result);
-                }
-
-                return false;
-            }
-        );
-        offsetZOption.SetValue(player, keychain.OffsetZ.ToString());
-        offsetZOption.ValueChanged += (_,
-            args) =>
-        {
-            var value = float.Parse(args.NewValue);
-            Api.UpdateWeaponSkin(data.SteamID, data.Team, data.DefinitionIndex, skin =>
-            {
-                skin.GetKeychain(slot)?.OffsetZ = value;
-            }, true);
-        };
-        main.AddOption(offsetZOption);
-
-        var resetOffsetOption = new ButtonMenuOption(LocalizationService[player].MenuKeychainPropertiesResetOffset);
-        resetOffsetOption.Click += (_,
-            args) =>
-        {
-            Api.UpdateWeaponSkin(data.SteamID, data.Team, data.DefinitionIndex, skin =>
-            {
-                skin.GetKeychain(slot)?.OffsetX = 0f;
-                skin.GetKeychain(slot)?.OffsetY = 0f;
-                skin.GetKeychain(slot)?.OffsetZ = 0f;
-            }, true);
-            return ValueTask.CompletedTask;
-        };
-        main.AddOption(resetOffsetOption);
-
-        return main.Build();
+        if (_hud == null || !TryGetWeaponDataInHand(player, out var dataInHand)) return;
+        var builder = _hud.Menu($"ws.keychainprop.{player.SteamID}.{slot}", "Anahtarlık Özellikleri");
+        BuildKeychainPropertiesSubmenu(builder, player, dataInHand, slot);
+        builder.Build().Open(player);
     }
 
-    public IMenuOption? GetKeychainPropertiesMenuSubmenuOption(IPlayer player,
-        WeaponSkinData data,
-        int slot)
+    public void BuildKeychainPropertiesSubmenu(IMenuBuilder builder, IPlayer player, WeaponSkinData data, int slot)
     {
-        if (!ItemPermissionService.CanUseKeychains(player.SteamID)) return null;
-        if (!data.HasKeychain(slot)) return null;
+        builder.Description("Anahtarlık Özellikleri");
+
         var keychain = data.GetKeychain(slot);
-        if (keychain == null) return null;
-        var keychainName = GetKeychainName(keychain, player.PlayerLanguage.Value);
-        if (keychainName == null) return null;
-        return new SubmenuMenuOption(LocalizationService[player].MenuSkinPropertiesSetKeychain(slot, keychainName),
-            () => Task.FromResult(BuildKeychainPropertiesMenu(player, data, slot)));
+        if (keychain == null)
+        {
+            builder.Info("Anahtarlık bulunmuyor.");
+            return;
+        }
+
+        // Seed
+        builder.Button(
+            p =>
+            {
+                var k = TryGetWeaponDataInHand(p, out var d) ? d.GetKeychain(slot) : keychain;
+                return $"Seed: [{k?.Seed ?? keychain.Seed}]";
+            },
+            ctx =>
+            {
+                var p = ctx.Player;
+                PromptChatInput(p, "Yeni anahtarlık seed değerini giriniz (Sayı):",
+                    input => int.TryParse(input, out var v) && v >= 0,
+                    (target, input) =>
+                    {
+                        var val = int.Parse(input);
+                        Api.UpdateWeaponSkin(data.SteamID, data.Team, data.DefinitionIndex, skin =>
+                        {
+                            var k = skin.GetKeychain(slot);
+                            if (k != null) k.Seed = val;
+                        }, true);
+
+                        _hud?.Toast(target, new ToastOptions
+                        {
+                            Title = "WeaponSkins",
+                            Text = $"Anahtarlık seed {val} yapıldı!",
+                            Kind = ToastKind.Success,
+                            Key = "ws.keychain"
+                        });
+                        target.SendChat($"[gold][WeaponSkins][/] Anahtarlık seed [lime]{val}[/] yapıldı!");
+                        OpenKeychainPropertiesMenu(target, slot);
+                    },
+                    onCancel: target => OpenKeychainPropertiesMenu(target, slot));
+            });
+
+        // Offset X
+        builder.Button(
+            p =>
+            {
+                var k = TryGetWeaponDataInHand(p, out var d) ? d.GetKeychain(slot) : keychain;
+                return $"Offset X: [{(k?.OffsetX ?? keychain.OffsetX):F2}]";
+            },
+            ctx =>
+            {
+                var p = ctx.Player;
+                PromptChatInput(p, "Yeni Offset X değerini giriniz (Örn: 0.1):",
+                    input => float.TryParse(input, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) && float.IsFinite(v),
+                    (target, input) =>
+                    {
+                        var val = float.Parse(input, CultureInfo.InvariantCulture);
+                        Api.UpdateWeaponSkin(data.SteamID, data.Team, data.DefinitionIndex, skin =>
+                        {
+                            var k = skin.GetKeychain(slot);
+                            if (k != null) k.OffsetX = val;
+                        }, true);
+
+                        _hud?.Toast(target, new ToastOptions
+                        {
+                            Title = "WeaponSkins",
+                            Text = $"Offset X: {val:F2} yapıldı!",
+                            Kind = ToastKind.Success,
+                            Key = "ws.keychain"
+                        });
+                        target.SendChat($"[gold][WeaponSkins][/] Offset X [lime]{val:F2}[/] yapıldı!");
+                        OpenKeychainPropertiesMenu(target, slot);
+                    },
+                    onCancel: target => OpenKeychainPropertiesMenu(target, slot));
+            });
+
+        // Offset Y
+        builder.Button(
+            p =>
+            {
+                var k = TryGetWeaponDataInHand(p, out var d) ? d.GetKeychain(slot) : keychain;
+                return $"Offset Y: [{(k?.OffsetY ?? keychain.OffsetY):F2}]";
+            },
+            ctx =>
+            {
+                var p = ctx.Player;
+                PromptChatInput(p, "Yeni Offset Y değerini giriniz (Örn: 0.1):",
+                    input => float.TryParse(input, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) && float.IsFinite(v),
+                    (target, input) =>
+                    {
+                        var val = float.Parse(input, CultureInfo.InvariantCulture);
+                        Api.UpdateWeaponSkin(data.SteamID, data.Team, data.DefinitionIndex, skin =>
+                        {
+                            var k = skin.GetKeychain(slot);
+                            if (k != null) k.OffsetY = val;
+                        }, true);
+
+                        _hud?.Toast(target, new ToastOptions
+                        {
+                            Title = "WeaponSkins",
+                            Text = $"Offset Y: {val:F2} yapıldı!",
+                            Kind = ToastKind.Success,
+                            Key = "ws.keychain"
+                        });
+                        target.SendChat($"[gold][WeaponSkins][/] Offset Y [lime]{val:F2}[/] yapıldı!");
+                        OpenKeychainPropertiesMenu(target, slot);
+                    },
+                    onCancel: target => OpenKeychainPropertiesMenu(target, slot));
+            });
+
+        // Offset Z
+        builder.Button(
+            p =>
+            {
+                var k = TryGetWeaponDataInHand(p, out var d) ? d.GetKeychain(slot) : keychain;
+                return $"Offset Z: [{(k?.OffsetZ ?? keychain.OffsetZ):F2}]";
+            },
+            ctx =>
+            {
+                var p = ctx.Player;
+                PromptChatInput(p, "Yeni Offset Z değerini giriniz (Örn: 0.1):",
+                    input => float.TryParse(input, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) && float.IsFinite(v),
+                    (target, input) =>
+                    {
+                        var val = float.Parse(input, CultureInfo.InvariantCulture);
+                        Api.UpdateWeaponSkin(data.SteamID, data.Team, data.DefinitionIndex, skin =>
+                        {
+                            var k = skin.GetKeychain(slot);
+                            if (k != null) k.OffsetZ = val;
+                        }, true);
+
+                        _hud?.Toast(target, new ToastOptions
+                        {
+                            Title = "WeaponSkins",
+                            Text = $"Offset Z: {val:F2} yapıldı!",
+                            Kind = ToastKind.Success,
+                            Key = "ws.keychain"
+                        });
+                        target.SendChat($"[gold][WeaponSkins][/] Offset Z [lime]{val:F2}[/] yapıldı!");
+                        OpenKeychainPropertiesMenu(target, slot);
+                    },
+                    onCancel: target => OpenKeychainPropertiesMenu(target, slot));
+            });
+
+        // Reset Offset
+        builder.Button(LocalizationService[player].MenuKeychainPropertiesResetOffset, ctx =>
+        {
+            var p = ctx.Player;
+            Api.UpdateWeaponSkin(data.SteamID, data.Team, data.DefinitionIndex, skin =>
+            {
+                var k = skin.GetKeychain(slot);
+                if (k != null)
+                {
+                    k.OffsetX = 0f;
+                    k.OffsetY = 0f;
+                    k.OffsetZ = 0f;
+                }
+            }, true);
+
+            _hud?.Toast(p, new ToastOptions
+            {
+                Title = "WeaponSkins",
+                Text = "Anahtarlık ofsetleri sıfırlandı.",
+                Kind = ToastKind.Warning,
+                Key = "ws.keychain"
+            });
+            p.SendChat("[gold][WeaponSkins][/] Anahtarlık ofsetleri sıfırlandı.");
+            ctx.Refresh();
+        });
     }
 }

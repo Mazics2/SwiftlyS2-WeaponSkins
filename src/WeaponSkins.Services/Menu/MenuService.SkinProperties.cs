@@ -1,5 +1,8 @@
-using SwiftlyS2.Core.Menus.OptionsBase;
-using SwiftlyS2.Shared.Menus;
+using System.Globalization;
+
+using PanoramaHud.Contract;
+
+using SwiftlyS2.Shared;
 using SwiftlyS2.Shared.Players;
 
 using WeaponSkins.Shared;
@@ -8,205 +11,224 @@ namespace WeaponSkins;
 
 public partial class MenuService
 {
-    public IMenuAPI BuildSkinPropertiesMenu(IPlayer player,
-        WeaponSkinData weaponInHand)
+    public void OpenSkinPropertiesMenu(IPlayer player)
     {
-        var main = Core.MenusAPI.CreateBuilder();
-        main.Design.SetMenuTitle(LocalizationService[player].MenuTitleSkinProperties);
+        if (_hud == null) return;
+        var builder = _hud.Menu($"ws.skinprops.{player.SteamID}", LocalizationService[player].MenuTitleSkinProperties);
+        BuildSkinPropertiesSubmenu(builder, player);
+        builder.Build().Open(player);
+    }
 
-        var wearOption = new InputMenuOption(
-            LocalizationService[player].MenuSkinPropertiesWear,
-            validator: (value) =>
-            {
-                if (float.TryParse(value, out var result))
-                {
-                    return result is >= 0.0f and <= 1.0f;
-                }
+    public void BuildSkinPropertiesSubmenu(IMenuBuilder builder, IPlayer player)
+    {
+        builder.Description("Özellik Seçiniz");
 
-                return false;
-            }
-        );
-
-        wearOption.SetValue(player, weaponInHand.PaintkitWear.ToString());
-
-        wearOption.ValueChanged += (_,
-            args) =>
+        if (!TryGetWeaponDataInHand(player, out var weaponInHand))
         {
-            weaponInHand.PaintkitWear = float.Parse(args.NewValue);
-            Api.UpdateWeaponSkin(weaponInHand.SteamID, weaponInHand.Team, weaponInHand.DefinitionIndex, skin =>
+            builder.Info("Lütfen önce elinize bir silah alınız!");
+            return;
+        }
+
+        // 1. Aşınma (Wear)
+        builder.Button(
+            p => TryGetWeaponDataInHand(p, out var d) ? $"Aşınma: [{d.PaintkitWear:F2}]" : $"Aşınma: [{weaponInHand.PaintkitWear:F2}]",
+            ctx =>
             {
-                skin.PaintkitWear = weaponInHand.PaintkitWear;
-            }, true);
-        };
+                var p = ctx.Player;
+                PromptChatInput(p, "Yeni aşınma değerini giriniz (0.00 - 1.00):",
+                    input => float.TryParse(input, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) && v is >= 0.0f and <= 1.0f,
+                    (target, input) =>
+                    {
+                        var val = float.Parse(input, CultureInfo.InvariantCulture);
+                        Api.UpdateWeaponSkin(weaponInHand.SteamID, weaponInHand.Team, weaponInHand.DefinitionIndex, skin =>
+                        {
+                            skin.PaintkitWear = val;
+                        }, true);
 
-        main.AddOption(wearOption);
+                        _hud?.Toast(target, new ToastOptions
+                        {
+                            Title = "WeaponSkins",
+                            Text = $"Aşınma değeri {val:F2} olarak ayarlandı!",
+                            Kind = ToastKind.Success,
+                            Key = "ws.prop"
+                        });
+                        target.SendChat($"[gold][WeaponSkins][/] Aşınma değeri [lime]{val:F2}[/] olarak ayarlandı!");
+                        OpenSkinPropertiesMenu(target);
+                    },
+                    onCancel: target => OpenSkinPropertiesMenu(target));
+            });
 
-        var seedOption = new InputMenuOption(
-            LocalizationService[player].MenuSkinPropertiesSeed,
-            validator: (value) =>
+        // 2. Desen No (Seed)
+        builder.Button(
+            p => TryGetWeaponDataInHand(p, out var d) ? $"Desen No (Seed): [{d.PaintkitSeed}]" : $"Desen No: [{weaponInHand.PaintkitSeed}]",
+            ctx =>
             {
-                if (int.TryParse(value, out var result))
-                {
-                    return result >= 0;
-                }
+                var p = ctx.Player;
+                PromptChatInput(p, "Yeni Seed değerini giriniz (Sayı):",
+                    input => int.TryParse(input, out var v) && v >= 0,
+                    (target, input) =>
+                    {
+                        var val = int.Parse(input);
+                        Api.UpdateWeaponSkin(weaponInHand.SteamID, weaponInHand.Team, weaponInHand.DefinitionIndex, skin =>
+                        {
+                            skin.PaintkitSeed = val;
+                        }, true);
 
-                return false;
-            }
-        );
-        seedOption.SetValue(player, weaponInHand.PaintkitSeed.ToString());
-        seedOption.ValueChanged += (_,
-            args) =>
+                        _hud?.Toast(target, new ToastOptions
+                        {
+                            Title = "WeaponSkins",
+                            Text = $"Seed değeri {val} olarak ayarlandı!",
+                            Kind = ToastKind.Success,
+                            Key = "ws.prop"
+                        });
+                        target.SendChat($"[gold][WeaponSkins][/] Seed değeri [lime]{val}[/] olarak ayarlandı!");
+                        OpenSkinPropertiesMenu(target);
+                    },
+                    onCancel: target => OpenSkinPropertiesMenu(target));
+            });
+
+        // 3. İsim Etiketi (Nametag)
+        builder.Button(
+            p =>
+            {
+                var current = TryGetWeaponDataInHand(p, out var d) ? d.Nametag : weaponInHand.Nametag;
+                var display = string.IsNullOrWhiteSpace(current) ? LocalizationService[p].MenuSkinPropertiesNametagNone : current;
+                return $"İsim Etiketi: [{display}]";
+            },
+            ctx =>
+            {
+                var p = ctx.Player;
+                PromptChatInput(p, "Yeni isim etiketini yazınız:",
+                    input => !string.IsNullOrWhiteSpace(input) && input.Length <= 32,
+                    (target, input) =>
+                    {
+                        Api.UpdateWeaponSkin(weaponInHand.SteamID, weaponInHand.Team, weaponInHand.DefinitionIndex, skin =>
+                        {
+                            skin.Nametag = input;
+                        }, true);
+
+                        _hud?.Toast(target, new ToastOptions
+                        {
+                            Title = "WeaponSkins",
+                            Text = $"İsim etiketi {input} yapıldı!",
+                            Kind = ToastKind.Success,
+                            Key = "ws.prop"
+                        });
+                        target.SendChat($"[gold][WeaponSkins][/] İsim etiketi [lime]{input}[/] yapıldı!");
+                        OpenSkinPropertiesMenu(target);
+                    },
+                    onCancel: target => OpenSkinPropertiesMenu(target));
+            });
+
+        // 4. İsim Etiketini Kaldır
+        builder.Button(LocalizationService[player].MenuSkinPropertiesNametagUnset, ctx =>
         {
-            weaponInHand.PaintkitSeed = int.Parse(args.NewValue);
-            Api.UpdateWeaponSkin(weaponInHand.SteamID, weaponInHand.Team, weaponInHand.DefinitionIndex, skin =>
-            {
-                skin.PaintkitSeed = weaponInHand.PaintkitSeed;
-            }, true);
-        };
-
-        main.AddOption(seedOption);
-
-
-        var nametagOption = new InputMenuOption(
-            LocalizationService[player].MenuSkinPropertiesNametag
-        );
-
-        nametagOption.SetValue(player,
-            weaponInHand.Nametag ?? LocalizationService[player].MenuSkinPropertiesNametagNone);
-
-        nametagOption.ValueChanged += (_,
-            args) =>
-        {
-            Api.UpdateWeaponSkin(weaponInHand.SteamID, weaponInHand.Team, weaponInHand.DefinitionIndex, skin =>
-            {
-                skin.Nametag = args.NewValue;
-            }, true);
-        };
-
-        main.AddOption(nametagOption);
-
-        var unsetNametagOption = new ButtonMenuOption(LocalizationService[player].MenuSkinPropertiesNametagUnset);
-        unsetNametagOption.Click += (_,
-            args) =>
-        {
+            var p = ctx.Player;
             Api.UpdateWeaponSkin(weaponInHand.SteamID, weaponInHand.Team, weaponInHand.DefinitionIndex, skin =>
             {
                 skin.Nametag = null;
             }, true);
-            return ValueTask.CompletedTask;
-        };
 
-        main.AddOption(unsetNametagOption);
-
-        var setStattrakOption = new ButtonMenuOption(LocalizationService[player].MenuSkinPropertiesSetStattrak);
-        setStattrakOption.Click += (_,
-            args) =>
-        {
-            Api.UpdateWeaponSkin(weaponInHand.SteamID, weaponInHand.Team, weaponInHand.DefinitionIndex, skin =>
+            _hud?.Toast(p, new ToastOptions
             {
-                skin.Quality = EconItemQuality.StatTrak;
-            }, true);
-            return ValueTask.CompletedTask;
-        };
+                Title = "WeaponSkins",
+                Text = "İsim etiketi kaldırıldı.",
+                Kind = ToastKind.Warning,
+                Key = "ws.prop"
+            });
+            p.SendChat("[gold][WeaponSkins][/] İsim etiketi kaldırıldı.");
+            ctx.Refresh();
+        });
 
-        main.AddOption(setStattrakOption);
-
-        var unsetStattrakOption = new ButtonMenuOption(LocalizationService[player].MenuSkinPropertiesUnsetStattrak);
-        unsetStattrakOption.Click += (_,
-            args) =>
-        {
-            Api.UpdateWeaponSkin(weaponInHand.SteamID, weaponInHand.Team, weaponInHand.DefinitionIndex, skin =>
+        // 5. StatTrak Toggle
+        builder.Toggle("StatTrak™",
+            get: p => (TryGetWeaponDataInHand(p, out var d) ? d.Quality : weaponInHand.Quality) == EconItemQuality.StatTrak,
+            set: (ctx, val) =>
             {
-                skin.Quality = EconItemQuality.Normal;
-            }, true);
-            return ValueTask.CompletedTask;
-        };
-
-        main.AddOption(unsetStattrakOption);
-
-        var setSouvenirOption = new ButtonMenuOption(LocalizationService[player].MenuSkinPropertiesSetSouvenir);
-        setSouvenirOption.Click += (_,
-            args) =>
-        {
-            Api.UpdateWeaponSkin(weaponInHand.SteamID, weaponInHand.Team, weaponInHand.DefinitionIndex, skin =>
-            {
-                skin.Quality = EconItemQuality.Souvenir;
-            }, true);
-            return ValueTask.CompletedTask;
-        };
-        main.AddOption(setSouvenirOption);
-
-        var unsetSouvenirOption = new ButtonMenuOption(LocalizationService[player].MenuSkinPropertiesUnsetSouvenir);
-        unsetSouvenirOption.Click += (_,
-            args) =>
-        {
-            Api.UpdateWeaponSkin(weaponInHand.SteamID, weaponInHand.Team, weaponInHand.DefinitionIndex, skin =>
-            {
-                skin.Quality = EconItemQuality.Normal;
-            }, true);
-            return ValueTask.CompletedTask;
-        };
-
-        main.AddOption(unsetSouvenirOption);
-
-        var setStattrakCountOption = new InputMenuOption(
-            LocalizationService[player].MenuSkinPropertiesStattrakCount(weaponInHand.StattrakCount),
-            validator: (value) =>
-            {
-                if (int.TryParse(value, out var result))
+                var p = ctx.Player;
+                Api.UpdateWeaponSkin(weaponInHand.SteamID, weaponInHand.Team, weaponInHand.DefinitionIndex, skin =>
                 {
-                    return result >= 0;
-                }
+                    skin.Quality = val ? EconItemQuality.StatTrak : EconItemQuality.Normal;
+                }, true);
 
-                return false;
-            }
-        );
-        setStattrakCountOption.SetValue(player, weaponInHand.StattrakCount.ToString());
-        setStattrakCountOption.ValueChanged += (_,
-            args) =>
-        {
-            weaponInHand.StattrakCount = int.Parse(args.NewValue);
-            Api.UpdateWeaponSkin(weaponInHand.SteamID, weaponInHand.Team, weaponInHand.DefinitionIndex, skin =>
+                _hud?.Toast(p, new ToastOptions
+                {
+                    Title = "StatTrak™",
+                    Text = val ? "Açık" : "Kapalı",
+                    Kind = val ? ToastKind.Success : ToastKind.Info,
+                    Key = "ws.prop"
+                });
+                p.SendChat($"[gold][WeaponSkins][/] StatTrak™: {(val ? "[lime]Açık[/]" : "[red]Kapalı[/]")}");
+            });
+
+        // 6. StatTrak Sayısı
+        builder.Button(
+            p => TryGetWeaponDataInHand(p, out var d) ? $"StatTrak™ Sayısı: [{d.StattrakCount}]" : $"StatTrak™: [{weaponInHand.StattrakCount}]",
+            ctx =>
             {
-                skin.StattrakCount = weaponInHand.StattrakCount;
-            }, true);
-        };
-        main.AddOption(setStattrakCountOption);
+                var p = ctx.Player;
+                PromptChatInput(p, "Yeni StatTrak™ leş sayısını giriniz:",
+                    input => int.TryParse(input, out var v) && v >= 0,
+                    (target, input) =>
+                    {
+                        var val = int.Parse(input);
+                        Api.UpdateWeaponSkin(weaponInHand.SteamID, weaponInHand.Team, weaponInHand.DefinitionIndex, skin =>
+                        {
+                            skin.StattrakCount = val;
+                        }, true);
 
-        for (int i = 0; i < 6; i++)
-        {
-            var option = GetStickerPropertiesMenuSubmenuOption(player, weaponInHand, i);
-            if (option != null)
+                        _hud?.Toast(target, new ToastOptions
+                        {
+                            Title = "StatTrak™",
+                            Text = $"StatTrak™ sayısı {val} yapıldı!",
+                            Kind = ToastKind.Success,
+                            Key = "ws.prop"
+                        });
+                        target.SendChat($"[gold][WeaponSkins][/] StatTrak™ sayısı [lime]{val}[/] yapıldı!");
+                        OpenSkinPropertiesMenu(target);
+                    },
+                    onCancel: target => OpenSkinPropertiesMenu(target));
+            });
+
+        // 7. Hatıra (Souvenir) Toggle
+        builder.Toggle("Hatıra (Souvenir)",
+            get: p => (TryGetWeaponDataInHand(p, out var d) ? d.Quality : weaponInHand.Quality) == EconItemQuality.Souvenir,
+            set: (ctx, val) =>
             {
-                main.AddOption(option);
+                var p = ctx.Player;
+                Api.UpdateWeaponSkin(weaponInHand.SteamID, weaponInHand.Team, weaponInHand.DefinitionIndex, skin =>
+                {
+                    skin.Quality = val ? EconItemQuality.Souvenir : EconItemQuality.Normal;
+                }, true);
+
+                _hud?.Toast(p, new ToastOptions
+                {
+                    Title = "Hatıra (Souvenir)",
+                    Text = val ? "Açık" : "Kapalı",
+                    Kind = val ? ToastKind.Success : ToastKind.Info,
+                    Key = "ws.prop"
+                });
+                p.SendChat($"[gold][WeaponSkins][/] Hatıra (Souvenir): {(val ? "[lime]Açık[/]" : "[red]Kapalı[/]")}");
+            });
+
+        // 8. Stickers Properties Submenus (slots 0-4)
+        for (int i = 0; i < 5; i++)
+        {
+            int slot = i;
+            var sticker = weaponInHand.GetSticker(slot);
+            if (sticker != null && sticker.Id != 0)
+            {
+                var sName = GetStickerName(sticker, player.PlayerLanguage.Value) ?? $"Slot {slot + 1}";
+                builder.Submenu($"Çıkartma {slot + 1} ({sName}) Ayarları", sub => BuildStickerPropertiesSubmenu(sub, player, weaponInHand, slot));
             }
         }
 
-        for (int i = 0; i < 1; i++)
+        // 9. Keychain Properties Submenu
+        var keychain = weaponInHand.GetKeychain(0);
+        if (keychain != null && keychain.Id != 0)
         {
-            var option = GetKeychainPropertiesMenuSubmenuOption(player, weaponInHand, i);
-            if (option != null)
-            {
-                main.AddOption(option);
-            }
+            var kName = GetKeychainName(keychain, player.PlayerLanguage.Value) ?? "Anahtarlık";
+            builder.Submenu($"Anahtarlık ({kName}) Ayarları", sub => BuildKeychainPropertiesSubmenu(sub, player, weaponInHand, 0));
         }
-
-        return main.Build();
-    }
-
-    public IMenuOption GetSkinPropertiesMenuSubmenuOption(IPlayer player)
-    {
-        if (!ItemPermissionService.CanUseWeaponSkins(player.SteamID))
-        {
-            return CreateDisabledOption(LocalizationService[player].MenuTitleSkinProperties);
-        }
-
-        if (!TryGetWeaponDataInHand(player, out var weaponInHand))
-        {
-            return CreateDisabledOption(LocalizationService[player].MenuTitleSkinProperties);
-        }
-
-        return new SubmenuMenuOption(LocalizationService[player].MenuTitleSkinProperties,
-            () => Task.FromResult(BuildSkinPropertiesMenu(player, weaponInHand)));
     }
 }

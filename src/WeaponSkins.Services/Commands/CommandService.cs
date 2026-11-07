@@ -42,6 +42,17 @@ public partial class CommandService
             return;
         }
 
+        // Open the CS2 Panorama SELECT SKIN menu if MenuApi is loaded
+        var menuApiPlugin = AppDomain.CurrentDomain.GetAssemblies()
+            .Select(a => a.GetType("MenuApi.Plugin", throwOnError: false))
+            .FirstOrDefault(t => t != null);
+        var menuApiInstance = menuApiPlugin?.GetProperty("Instance")?.GetValue(null);
+        if (menuApiInstance != null)
+        {
+            context.Sender!.ExecuteCommand("sw_skins");
+            return;
+        }
+
         MenuService.OpenMainMenu(context.Sender!);
     }
 

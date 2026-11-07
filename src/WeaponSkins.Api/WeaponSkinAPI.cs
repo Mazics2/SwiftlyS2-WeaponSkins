@@ -11,6 +11,13 @@ namespace WeaponSkins;
 
 public class WeaponSkinAPI : IWeaponSkinAPI
 {
+    public static WeaponSkinAPI? Instance { get; private set; }
+
+    public static void Reset()
+    {
+        Instance = null;
+    }
+
     private IInventoryUpdateService InventoryUpdateService { get; init; }
     private DataService DataService { get; init; }
     private StorageService StorageService { get; init; }
@@ -42,6 +49,7 @@ public class WeaponSkinAPI : IWeaponSkinAPI
         EconService = econService;
         ItemPermissionService = itemPermissionService;
         WeaponSkinGetterAPI = weaponSkinGetterAPI;
+        Instance = this;
     }
 
     public void SetWeaponSkins(IEnumerable<WeaponSkinData> skins,

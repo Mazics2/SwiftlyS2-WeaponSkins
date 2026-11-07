@@ -1,5 +1,8 @@
-using SwiftlyS2.Core.Menus.OptionsBase;
-using SwiftlyS2.Shared.Menus;
+using System.Globalization;
+
+using PanoramaHud.Contract;
+
+using SwiftlyS2.Shared;
 using SwiftlyS2.Shared.Players;
 
 using WeaponSkins.Shared;
@@ -8,118 +11,159 @@ namespace WeaponSkins;
 
 public partial class MenuService
 {
-    public IMenuAPI BuildStickerPropertiesMenu(IPlayer player,
-        WeaponSkinData data,
-        int slot)
+    public void OpenStickerPropertiesMenu(IPlayer player, int slot)
     {
-        var main = Core.MenusAPI.CreateBuilder();
-        main.Design.SetMenuTitle(LocalizationService[player].MenuTitleStickerProperties);
-
-        var sticker = data.GetSticker(slot);
-        if (sticker == null) return main.Build();
-
-        var wearOption = new InputMenuOption(
-            LocalizationService[player].MenuSkinPropertiesWear,
-            validator: (value) =>
-            {
-                if (float.TryParse(value, out var result))
-                {
-                    return result is >= 0.0f and <= 1.0f;
-                }
-
-                return false;
-            }
-        );
-
-        wearOption.SetValue(player, sticker.Wear.ToString());
-        wearOption.ValueChanged += (_,
-            args) =>
-        {
-            var value = float.Parse(args.NewValue);
-            Api.UpdateWeaponSkin(data.SteamID, data.Team, data.DefinitionIndex, skin =>
-            {
-                skin.GetSticker(slot)?.Wear = value;
-            }, true);
-        };
-        main.AddOption(wearOption);
-
-        var offsetXOption = new InputMenuOption(
-            LocalizationService[player].MenuStickerPropertiesOffsetX,
-            validator: (value) =>
-            {
-                if (float.TryParse(value, out var result))
-                {
-                    return float.IsFinite(result);
-                }
-
-                return false;
-            }
-        );
-        offsetXOption.SetValue(player, sticker.OffsetX.ToString());
-        offsetXOption.ValueChanged += (_,
-            args) =>
-        {
-            var value = float.Parse(args.NewValue);
-            Api.UpdateWeaponSkin(data.SteamID, data.Team, data.DefinitionIndex, skin =>
-            {
-                skin.GetSticker(slot)?.OffsetX = value;
-                skin.GetSticker(slot)?.Schema = 0;
-            }, true);
-        };
-        main.AddOption(offsetXOption);
-
-        var offsetYOption = new InputMenuOption(
-            LocalizationService[player].MenuStickerPropertiesOffsetY,
-            validator: (value) =>
-            {
-                if (float.TryParse(value, out var result))
-                {
-                    return float.IsFinite(result);
-                }
-
-                return false;
-            }
-        );
-        offsetYOption.SetValue(player, sticker.OffsetY.ToString());
-        offsetYOption.ValueChanged += (_,
-            args) =>
-        {
-            var value = float.Parse(args.NewValue);
-            Api.UpdateWeaponSkin(data.SteamID, data.Team, data.DefinitionIndex, skin =>
-            {
-                skin.GetSticker(slot)?.OffsetY = value;
-                skin.GetSticker(slot)?.Schema = 0;
-            }, true);
-        };
-        main.AddOption(offsetYOption);
-
-        var resetOffsetOption = new ButtonMenuOption(LocalizationService[player].MenuStickerPropertiesResetOffset);
-        resetOffsetOption.Click += (_,
-            args) =>
-        {
-            Api.UpdateWeaponSkin(data.SteamID, data.Team, data.DefinitionIndex, skin =>
-            {
-                skin.GetSticker(slot)?.OffsetX = 0f;
-                skin.GetSticker(slot)?.OffsetY = 0f;
-                skin.GetSticker(slot)?.Schema = 1337;
-            }, true);
-            return ValueTask.CompletedTask;
-        };
-        main.AddOption(resetOffsetOption);
-
-        return main.Build();
+        if (_hud == null || !TryGetWeaponDataInHand(player, out var dataInHand)) return;
+        var builder = _hud.Menu($"ws.stickerprop.{player.SteamID}.{slot}", $"Çıkartma {slot + 1} Özellikleri");
+        BuildStickerPropertiesSubmenu(builder, player, dataInHand, slot);
+        builder.Build().Open(player);
     }
 
-    public IMenuOption? GetStickerPropertiesMenuSubmenuOption(IPlayer player,
-        WeaponSkinData data,
-        int slot)
+    public void BuildStickerPropertiesSubmenu(IMenuBuilder builder, IPlayer player, WeaponSkinData data, int slot)
     {
-        if (!ItemPermissionService.CanUseStickers(player.SteamID)) return null;
-        if (!data.HasSticker(slot)) return null;
+        builder.Description($"Çıkartma {slot + 1} Özellikleri");
+
         var sticker = data.GetSticker(slot);
-        var stickerName = GetStickerName(sticker, player.PlayerLanguage.Value);
-        if (stickerName == null) return null;
-        return new SubmenuMenuOption(LocalizationService[player].MenuSkinPropertiesSetSticker(slot, stickerName),
-            () => Task.FromResult(BuildStickerPropertiesMenu(player, data, slot)));
+        if (sticker == null)
+        {
+            builder.Info("Bu slotta çıkartma bulunmuyor.");
+            return;
+        }
+
+        // Aşınma (Wear)
+        builder.Button(
+            p =>
+            {
+                var s = TryGetWeaponDataInHand(p, out var d) ? d.GetSticker(slot) : sticker;
+                return $"Aşınma: [{(s?.Wear ?? sticker.Wear):F2}]";
+            },
+            ctx =>
+            {
+                var p = ctx.Player;
+                PromptChatInput(p, "Yeni çıkartma aşınmasını giriniz (0.00 - 1.00):",
+                    input => float.TryParse(input, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) && v is >= 0.0f and <= 1.0f,
+                    (target, input) =>
+                    {
+                        var val = float.Parse(input, CultureInfo.InvariantCulture);
+                        Api.UpdateWeaponSkin(data.SteamID, data.Team, data.DefinitionIndex, skin =>
+                        {
+                            var s = skin.GetSticker(slot);
+                            if (s != null) s.Wear = val;
+                        }, true);
+
+                        _hud?.Toast(target, new ToastOptions
+                        {
+                            Title = "WeaponSkins",
+                            Text = $"Çıkartma {slot + 1} aşınması {val:F2} yapıldı!",
+                            Kind = ToastKind.Success,
+                            Key = "ws.sticker"
+                        });
+                        target.SendChat($"[gold][WeaponSkins][/] Çıkartma {slot + 1} aşınması [lime]{val:F2}[/] yapıldı!");
+                        OpenStickerPropertiesMenu(target, slot);
+                    },
+                    onCancel: target => OpenStickerPropertiesMenu(target, slot));
+            });
+
+        // Offset X
+        builder.Button(
+            p =>
+            {
+                var s = TryGetWeaponDataInHand(p, out var d) ? d.GetSticker(slot) : sticker;
+                return $"Offset X: [{(s?.OffsetX ?? sticker.OffsetX):F2}]";
+            },
+            ctx =>
+            {
+                var p = ctx.Player;
+                PromptChatInput(p, "Yeni Offset X değerini giriniz (Örn: 0.1):",
+                    input => float.TryParse(input, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) && float.IsFinite(v),
+                    (target, input) =>
+                    {
+                        var val = float.Parse(input, CultureInfo.InvariantCulture);
+                        Api.UpdateWeaponSkin(data.SteamID, data.Team, data.DefinitionIndex, skin =>
+                        {
+                            var s = skin.GetSticker(slot);
+                            if (s != null)
+                            {
+                                s.OffsetX = val;
+                                s.Schema = 0;
+                            }
+                        }, true);
+
+                        _hud?.Toast(target, new ToastOptions
+                        {
+                            Title = "WeaponSkins",
+                            Text = $"Offset X: {val:F2} yapıldı!",
+                            Kind = ToastKind.Success,
+                            Key = "ws.sticker"
+                        });
+                        target.SendChat($"[gold][WeaponSkins][/] Offset X [lime]{val:F2}[/] yapıldı!");
+                        OpenStickerPropertiesMenu(target, slot);
+                    },
+                    onCancel: target => OpenStickerPropertiesMenu(target, slot));
+            });
+
+        // Offset Y
+        builder.Button(
+            p =>
+            {
+                var s = TryGetWeaponDataInHand(p, out var d) ? d.GetSticker(slot) : sticker;
+                return $"Offset Y: [{(s?.OffsetY ?? sticker.OffsetY):F2}]";
+            },
+            ctx =>
+            {
+                var p = ctx.Player;
+                PromptChatInput(p, "Yeni Offset Y değerini giriniz (Örn: 0.1):",
+                    input => float.TryParse(input, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) && float.IsFinite(v),
+                    (target, input) =>
+                    {
+                        var val = float.Parse(input, CultureInfo.InvariantCulture);
+                        Api.UpdateWeaponSkin(data.SteamID, data.Team, data.DefinitionIndex, skin =>
+                        {
+                            var s = skin.GetSticker(slot);
+                            if (s != null)
+                            {
+                                s.OffsetY = val;
+                                s.Schema = 0;
+                            }
+                        }, true);
+
+                        _hud?.Toast(target, new ToastOptions
+                        {
+                            Title = "WeaponSkins",
+                            Text = $"Offset Y: {val:F2} yapıldı!",
+                            Kind = ToastKind.Success,
+                            Key = "ws.sticker"
+                        });
+                        target.SendChat($"[gold][WeaponSkins][/] Offset Y [lime]{val:F2}[/] yapıldı!");
+                        OpenStickerPropertiesMenu(target, slot);
+                    },
+                    onCancel: target => OpenStickerPropertiesMenu(target, slot));
+            });
+
+        // Reset Offset
+        builder.Button(LocalizationService[player].MenuStickerPropertiesResetOffset, ctx =>
+        {
+            var p = ctx.Player;
+            Api.UpdateWeaponSkin(data.SteamID, data.Team, data.DefinitionIndex, skin =>
+            {
+                var s = skin.GetSticker(slot);
+                if (s != null)
+                {
+                    s.OffsetX = 0f;
+                    s.OffsetY = 0f;
+                    s.Schema = 0;
+                }
+            }, true);
+
+            _hud?.Toast(p, new ToastOptions
+            {
+                Title = "WeaponSkins",
+                Text = $"Çıkartma {slot + 1} ofsetleri sıfırlandı.",
+                Kind = ToastKind.Warning,
+                Key = "ws.sticker"
+            });
+            p.SendChat($"[gold][WeaponSkins][/] Çıkartma {slot + 1} ofsetleri sıfırlandı.");
+            ctx.Refresh();
+        });
     }
 }

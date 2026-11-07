@@ -1,5 +1,8 @@
-using SwiftlyS2.Core.Menus.OptionsBase;
-using SwiftlyS2.Shared.Menus;
+using System.Globalization;
+
+using PanoramaHud.Contract;
+
+using SwiftlyS2.Shared;
 using SwiftlyS2.Shared.Players;
 
 using WeaponSkins.Shared;
@@ -8,163 +11,183 @@ namespace WeaponSkins;
 
 public partial class MenuService
 {
-    public IMenuAPI BuildKnifePropertiesMenu(IPlayer player,
-        KnifeSkinData weaponInHand)
+    public void OpenKnifePropertiesMenu(IPlayer player)
     {
-        var main = Core.MenusAPI.CreateBuilder();
-        main.Design.SetMenuTitle(LocalizationService[player].MenuTitleKnifeProperties);
+        if (_hud == null) return;
+        var builder = _hud.Menu($"ws.knifeprops.{player.SteamID}", LocalizationService[player].MenuTitleKnifeProperties);
+        BuildKnifePropertiesSubmenu(builder, player);
+        builder.Build().Open(player);
+    }
 
-        var wearOption = new InputMenuOption(
-            LocalizationService[player].MenuSkinPropertiesWear,
-            validator: (value) =>
-            {
-                if (float.TryParse(value, out var result))
-                {
-                    return result is >= 0.0f and <= 1.0f;
-                }
+    public void BuildKnifePropertiesSubmenu(IMenuBuilder builder, IPlayer player)
+    {
+        builder.Description("Özellik Seçiniz");
 
-                return false;
-            }
-        );
-        wearOption.SetValue(player, weaponInHand.PaintkitWear.ToString());
-        wearOption.ValueChanged += (_,
-            args) =>
+        if (!TryGetKnifeDataInHand(player, out var knifeInHand))
         {
-            weaponInHand.PaintkitWear = float.Parse(args.NewValue);
-            Api.UpdateKnifeSkin(weaponInHand.SteamID, weaponInHand.Team, skin =>
+            builder.Info("Kayıtlı bıçak verisi bulunamadı!");
+            return;
+        }
+
+        // 1. Aşınma (Wear)
+        builder.Button(
+            p => TryGetKnifeDataInHand(p, out var d) ? $"Aşınma: [{d.PaintkitWear:F2}]" : $"Aşınma: [{knifeInHand.PaintkitWear:F2}]",
+            ctx =>
             {
-                skin.PaintkitWear = weaponInHand.PaintkitWear;
-            }, true);
-        };
+                var p = ctx.Player;
+                PromptChatInput(p, "Yeni bıçak aşınmasını giriniz (0.00 - 1.00):",
+                    input => float.TryParse(input, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) && v is >= 0.0f and <= 1.0f,
+                    (target, input) =>
+                    {
+                        var val = float.Parse(input, CultureInfo.InvariantCulture);
+                        Api.UpdateKnifeSkin(knifeInHand.SteamID, knifeInHand.Team, skin =>
+                        {
+                            skin.PaintkitWear = val;
+                        }, true);
 
-        main.AddOption(wearOption);
+                        _hud?.Toast(target, new ToastOptions
+                        {
+                            Title = "WeaponSkins",
+                            Text = $"Bıçak aşınması {val:F2} yapıldı!",
+                            Kind = ToastKind.Success,
+                            Key = "ws.knife"
+                        });
+                        target.SendChat($"[gold][WeaponSkins][/] Bıçak aşınması [lime]{val:F2}[/] yapıldı!");
+                        OpenKnifePropertiesMenu(target);
+                    },
+                    onCancel: target => OpenKnifePropertiesMenu(target));
+            });
 
-        var seedOption = new InputMenuOption(
-            LocalizationService[player].MenuSkinPropertiesSeed,
-            validator: (value) =>
+        // 2. Desen No (Seed)
+        builder.Button(
+            p => TryGetKnifeDataInHand(p, out var d) ? $"Desen No (Seed): [{d.PaintkitSeed}]" : $"Desen No: [{knifeInHand.PaintkitSeed}]",
+            ctx =>
             {
-                if (int.TryParse(value, out var result))
-                {
-                    return result >= 0;
-                }
+                var p = ctx.Player;
+                PromptChatInput(p, "Yeni Seed değerini giriniz (Sayı):",
+                    input => int.TryParse(input, out var v) && v >= 0,
+                    (target, input) =>
+                    {
+                        var val = int.Parse(input);
+                        Api.UpdateKnifeSkin(knifeInHand.SteamID, knifeInHand.Team, skin =>
+                        {
+                            skin.PaintkitSeed = val;
+                        }, true);
 
-                return false;
-            }
-        );
+                        _hud?.Toast(target, new ToastOptions
+                        {
+                            Title = "WeaponSkins",
+                            Text = $"Bıçak seed değeri {val} yapıldı!",
+                            Kind = ToastKind.Success,
+                            Key = "ws.knife"
+                        });
+                        target.SendChat($"[gold][WeaponSkins][/] Bıçak seed değeri [lime]{val}[/] yapıldı!");
+                        OpenKnifePropertiesMenu(target);
+                    },
+                    onCancel: target => OpenKnifePropertiesMenu(target));
+            });
 
-        seedOption.SetValue(player, weaponInHand.PaintkitSeed.ToString());
+        // 3. İsim Etiketi (Nametag)
+        builder.Button(
+            p =>
+            {
+                var current = TryGetKnifeDataInHand(p, out var d) ? d.Nametag : knifeInHand.Nametag;
+                var display = string.IsNullOrWhiteSpace(current) ? LocalizationService[p].MenuSkinPropertiesNametagNone : current;
+                return $"İsim Etiketi: [{display}]";
+            },
+            ctx =>
+            {
+                var p = ctx.Player;
+                PromptChatInput(p, "Yeni isim etiketini yazınız:",
+                    input => !string.IsNullOrWhiteSpace(input) && input.Length <= 32,
+                    (target, input) =>
+                    {
+                        Api.UpdateKnifeSkin(knifeInHand.SteamID, knifeInHand.Team, skin =>
+                        {
+                            skin.Nametag = input;
+                        }, true);
 
-        seedOption.ValueChanged += (_,
-            args) =>
+                        _hud?.Toast(target, new ToastOptions
+                        {
+                            Title = "WeaponSkins",
+                            Text = $"Bıçak isim etiketi {input} yapıldı!",
+                            Kind = ToastKind.Success,
+                            Key = "ws.knife"
+                        });
+                        target.SendChat($"[gold][WeaponSkins][/] Bıçak isim etiketi [lime]{input}[/] yapıldı!");
+                        OpenKnifePropertiesMenu(target);
+                    },
+                    onCancel: target => OpenKnifePropertiesMenu(target));
+            });
+
+        // 4. İsim Etiketini Kaldır
+        builder.Button(LocalizationService[player].MenuSkinPropertiesNametagUnset, ctx =>
         {
-            weaponInHand.PaintkitSeed = int.Parse(args.NewValue);
-
-            Api.UpdateKnifeSkin(weaponInHand.SteamID, weaponInHand.Team, skin =>
-            {
-                skin.PaintkitSeed = weaponInHand.PaintkitSeed;
-            }, true);
-        };
-
-        main.AddOption(seedOption);
-
-
-        var nametagOption = new InputMenuOption(
-            LocalizationService[player].MenuSkinPropertiesNametag
-        );
-
-        nametagOption.SetValue(player,
-            weaponInHand.Nametag ?? LocalizationService[player].MenuSkinPropertiesNametagNone);
-
-        nametagOption.ValueChanged += (_,
-            args) =>
-        {
-            Api.UpdateKnifeSkin(weaponInHand.SteamID, weaponInHand.Team, skin =>
-            {
-                skin.Nametag = args.NewValue;
-            }, true);
-        };
-
-        main.AddOption(nametagOption);
-
-        var unsetNametagOption = new ButtonMenuOption(LocalizationService[player].MenuSkinPropertiesNametagUnset);
-        unsetNametagOption.Click += (_,
-            args) =>
-        {
-            Api.UpdateKnifeSkin(weaponInHand.SteamID, weaponInHand.Team, skin =>
+            var p = ctx.Player;
+            Api.UpdateKnifeSkin(knifeInHand.SteamID, knifeInHand.Team, skin =>
             {
                 skin.Nametag = null;
             }, true);
-            return ValueTask.CompletedTask;
-        };
 
-        main.AddOption(unsetNametagOption);
-
-        var setStattrakOption = new ButtonMenuOption(LocalizationService[player].MenuSkinPropertiesSetStattrak);
-        setStattrakOption.Click += (_,
-            args) =>
-        {
-            Api.UpdateKnifeSkin(weaponInHand.SteamID, weaponInHand.Team, skin =>
+            _hud?.Toast(p, new ToastOptions
             {
-                skin.Quality = EconItemQuality.StatTrak;
-            }, true);
-            return ValueTask.CompletedTask;
-        };
+                Title = "WeaponSkins",
+                Text = "Bıçak isim etiketi kaldırıldı.",
+                Kind = ToastKind.Warning,
+                Key = "ws.knife"
+            });
+            p.SendChat("[gold][WeaponSkins][/] Bıçak isim etiketi kaldırıldı.");
+            ctx.Refresh();
+        });
 
-        main.AddOption(setStattrakOption);
-
-        var unsetStattrakOption = new ButtonMenuOption(LocalizationService[player].MenuSkinPropertiesUnsetStattrak);
-        unsetStattrakOption.Click += (_,
-            args) =>
-        {
-            Api.UpdateKnifeSkin(weaponInHand.SteamID, weaponInHand.Team, skin =>
+        // 5. StatTrak Toggle
+        builder.Toggle("StatTrak™",
+            get: p => (TryGetKnifeDataInHand(p, out var d) ? d.Quality : knifeInHand.Quality) == EconItemQuality.StatTrak,
+            set: (ctx, val) =>
             {
-                skin.Quality = EconItemQuality.Normal;
-            }, true);
-            return ValueTask.CompletedTask;
-        };
-
-        main.AddOption(unsetStattrakOption);
-
-        var setStattrakCountOption = new InputMenuOption(
-            LocalizationService[player].MenuSkinPropertiesStattrakCount(weaponInHand.StattrakCount),
-            validator: (value) =>
-            {
-                if (int.TryParse(value, out var result))
+                var p = ctx.Player;
+                Api.UpdateKnifeSkin(knifeInHand.SteamID, knifeInHand.Team, skin =>
                 {
-                    return result >= 0;
-                }
+                    skin.Quality = val ? EconItemQuality.StatTrak : EconItemQuality.Normal;
+                }, true);
 
-                return false;
-            }
-        );
-        setStattrakCountOption.SetValue(player, weaponInHand.StattrakCount.ToString());
-        setStattrakCountOption.ValueChanged += (_,
-            args) =>
-        {
-            weaponInHand.StattrakCount = int.Parse(args.NewValue);
-            Api.UpdateKnifeSkin(weaponInHand.SteamID, weaponInHand.Team, skin =>
+                _hud?.Toast(p, new ToastOptions
+                {
+                    Title = "StatTrak™",
+                    Text = val ? "Açık" : "Kapalı",
+                    Kind = val ? ToastKind.Success : ToastKind.Info,
+                    Key = "ws.knife"
+                });
+                p.SendChat($"[gold][WeaponSkins][/] Bıçak StatTrak™: {(val ? "[lime]Açık[/]" : "[red]Kapalı[/]")}");
+            });
+
+        // 6. StatTrak Sayısı
+        builder.Button(
+            p => TryGetKnifeDataInHand(p, out var d) ? $"StatTrak™ Sayısı: [{d.StattrakCount}]" : $"StatTrak™: [{knifeInHand.StattrakCount}]",
+            ctx =>
             {
-                skin.StattrakCount = weaponInHand.StattrakCount;
-            }, true);
-        };
-        main.AddOption(setStattrakCountOption);
+                var p = ctx.Player;
+                PromptChatInput(p, "Yeni StatTrak™ leş sayısını giriniz:",
+                    input => int.TryParse(input, out var v) && v >= 0,
+                    (target, input) =>
+                    {
+                        var val = int.Parse(input);
+                        Api.UpdateKnifeSkin(knifeInHand.SteamID, knifeInHand.Team, skin =>
+                        {
+                            skin.StattrakCount = val;
+                        }, true);
 
-        return main.Build();
-    }
-
-    public IMenuOption GetKnifePropertiesMenuSubmenuOption(IPlayer player)
-    {
-        if (!ItemPermissionService.CanUseKnifeSkins(player.SteamID))
-        {
-            return CreateDisabledOption(LocalizationService[player].MenuTitleKnifeProperties);
-        }
-
-        if (!TryGetKnifeDataInHand(player, out var dataInHand))
-        {
-            return CreateDisabledOption(LocalizationService[player].MenuTitleKnifeProperties);
-        }
-
-        return new SubmenuMenuOption(LocalizationService[player].MenuTitleKnifeProperties,
-            () => Task.FromResult(BuildKnifePropertiesMenu(player, dataInHand)));
+                        _hud?.Toast(target, new ToastOptions
+                        {
+                            Title = "StatTrak™",
+                            Text = $"StatTrak™ sayısı {val} yapıldı!",
+                            Kind = ToastKind.Success,
+                            Key = "ws.knife"
+                        });
+                        target.SendChat($"[gold][WeaponSkins][/] Bıçak StatTrak™ sayısı [lime]{val}[/] yapıldı!");
+                        OpenKnifePropertiesMenu(target);
+                    },
+                    onCancel: target => OpenKnifePropertiesMenu(target));
+            });
     }
 }

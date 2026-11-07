@@ -26,13 +26,65 @@ internal static class WeaponAppearance
         weapon.FallbackWear = skin.PaintkitWear;
         weapon.FallbackStatTrak = skin.Quality == EconItemQuality.StatTrak ? skin.StattrakCount : -1;
 
-        RemoveCosmeticAttributes(item.AttributeList);
-        RemoveCosmeticAttributes(item.NetworkedDynamicAttributes);
+        item.NetworkedDynamicAttributes.Attributes.RemoveAll();
+        item.AttributeList.Attributes.RemoveAll();
         WriteAttributes(skin, (name, value) =>
         {
             item.AttributeList.SetOrAddAttribute(name, value);
             item.NetworkedDynamicAttributes.SetOrAddAttribute(name, value);
         });
+
+        item.ItemIDLowUpdated();
+        item.ItemIDHighUpdated();
+        item.AccountIDUpdated();
+        item.InitializedUpdated();
+        item.CustomNameUpdated();
+        item.AttributeListUpdated();
+        item.NetworkedDynamicAttributesUpdated();
+        weapon.FallbackPaintKitUpdated();
+        weapon.FallbackSeedUpdated();
+        weapon.FallbackWearUpdated();
+        weapon.FallbackStatTrakUpdated();
+    }
+
+    public static void Apply(CBasePlayerWeapon weapon,
+        KnifeSkinData knife)
+    {
+        var item = weapon.AttributeManager.Item;
+        var itemId = (ulong)Random.Shared.NextInt64(1, long.MaxValue);
+        item.ItemID = itemId;
+        item.ItemIDLow = (uint)itemId;
+        item.ItemIDHigh = (uint)(itemId >> 32);
+        item.AccountID = (uint)knife.SteamID;
+        item.Initialized = true;
+        item.ItemDefinitionIndex = knife.DefinitionIndex;
+        item.EntityQuality = (int)knife.Quality;
+        item.CustomName = knife.Nametag ?? string.Empty;
+        weapon.OriginalOwnerXuidLow = (uint)knife.SteamID;
+        weapon.OriginalOwnerXuidHigh = (uint)(knife.SteamID >> 32);
+        weapon.FallbackPaintKit = knife.Paintkit;
+        weapon.FallbackSeed = knife.PaintkitSeed;
+        weapon.FallbackWear = knife.PaintkitWear;
+        weapon.FallbackStatTrak = knife.Quality == EconItemQuality.StatTrak ? knife.StattrakCount : -1;
+
+        item.NetworkedDynamicAttributes.Attributes.RemoveAll();
+        item.AttributeList.Attributes.RemoveAll();
+
+        item.AttributeList.SetOrAddAttribute("set item texture prefab", knife.Paintkit);
+        item.NetworkedDynamicAttributes.SetOrAddAttribute("set item texture prefab", knife.Paintkit);
+        item.AttributeList.SetOrAddAttribute("set item texture seed", knife.PaintkitSeed);
+        item.NetworkedDynamicAttributes.SetOrAddAttribute("set item texture seed", knife.PaintkitSeed);
+        item.AttributeList.SetOrAddAttribute("set item texture wear", knife.PaintkitWear);
+        item.NetworkedDynamicAttributes.SetOrAddAttribute("set item texture wear", knife.PaintkitWear);
+
+        if (knife.Quality == EconItemQuality.StatTrak)
+        {
+            var val = BitConverter.Int32BitsToSingle(knife.StattrakCount);
+            item.AttributeList.SetOrAddAttribute("kill eater", val);
+            item.AttributeList.SetOrAddAttribute("kill eater score type", 0);
+            item.NetworkedDynamicAttributes.SetOrAddAttribute("kill eater", val);
+            item.NetworkedDynamicAttributes.SetOrAddAttribute("kill eater score type", 0);
+        }
 
         item.ItemIDLowUpdated();
         item.ItemIDHighUpdated();

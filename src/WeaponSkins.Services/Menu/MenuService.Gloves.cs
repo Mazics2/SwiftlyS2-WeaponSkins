@@ -1,136 +1,88 @@
-using SwiftlyS2.Core.Menus.OptionsBase;
+using PanoramaHud.Contract;
+
 using SwiftlyS2.Shared;
-using SwiftlyS2.Shared.Menus;
 using SwiftlyS2.Shared.Players;
+
+using WeaponSkins.Econ;
+using WeaponSkins.Shared;
 
 namespace WeaponSkins;
 
 public partial class MenuService
 {
-    private ValueTask OnGloveSkinOptionClick(object? sender, MenuOptionClickEventArgs args)
+    public void OpenGloveSkinMenu(IPlayer player)
     {
-        Core.Scheduler.NextTick(() =>
-        {
-            if (TryGetGloveDataInHand(args.Player, out var gloveInHand))
-            {
-                if (Utilities.IsGloveDefinitionIndex(gloveInHand.DefinitionIndex))
-                {
-                    var menu = Core.MenusAPI.GetCurrentMenu(args.Player);
-                    if (menu != null)
-                    {
-                        var option = menu.Options.FirstOrDefault(o =>
-                                o.Tag is int tag &&
-                                tag == gloveInHand.Paintkit);
-
-                        if (option != null)
-                            menu.MoveToOption(args.Player, option);
-                    }
-                }
-            }
-        });
-        return ValueTask.CompletedTask;
+        if (_hud == null) return;
+        var builder = _hud.Menu($"ws.gloves.{player.SteamID}", LocalizationService[player].MenuTitleGloves);
+        BuildGloveSkinSubmenu(builder, player);
+        builder.Build().Open(player);
     }
 
-    public IMenuAPI BuildGloveSkinMenu(IPlayer player)
+    public void BuildGloveSkinSubmenu(IMenuBuilder builder, IPlayer player)
     {
-        var main = Core.MenusAPI.CreateBuilder();
-        main.Design.SetMenuTitle(LocalizationService[player].MenuTitleGloves);
+        builder.Description("Eldiven Türü Seçiniz");
 
-        foreach (var (glove, paintkits) in EconService.WeaponToPaintkits)
+        foreach (var (gloveKey, paintkits) in EconService.WeaponToPaintkits)
         {
-            var item = EconService.Items[glove];
+            if (!EconService.Items.TryGetValue(gloveKey, out var item))
+            {
+                continue;
+            }
+
             if (!Utilities.IsGloveDefinitionIndex(item.Index))
             {
                 continue;
             }
 
-            var submenuOption = new SubmenuMenuOption(EconService.GetLocalizedName(EconService.Items[glove].LocalizedNames, player.PlayerLanguage.Value), () =>
+            var gloveName = EconService.GetLocalizedName(item.LocalizedNames, player.PlayerLanguage.Value);
+            builder.Submenu(gloveName, sub => BuildGlovePaintkitsSubmenu(sub, player, item, paintkits));
+        }
+    }
+
+    public void BuildGlovePaintkitsSubmenu(IMenuBuilder builder, IPlayer player, ItemDefinition item, List<PaintkitDefinition> paintkits)
+    {
+        var gloveName = EconService.GetLocalizedName(item.LocalizedNames, player.PlayerLanguage.Value);
+        builder.Description($"{gloveName} Kaplaması Seçiniz");
+
+        // 1. Reset option
+        builder.Button(LocalizationService[player].MenuReset, ctx =>
+        {
+            var p = ctx.Player;
+            Api.ResetGloveSkin(p.SteamID, p.Controller.Team, true);
+            _hud?.Toast(p, new ToastOptions
             {
-                var skinMenu = Core.MenusAPI.CreateBuilder();
-                skinMenu.Design.SetMenuTitleVisible(false);
-                var sorted = paintkits.OrderByDescending(p => p.Rarity.Id).ToList();
-                var resetOption = new ButtonMenuOption(LocalizationService[player].MenuReset);
-                resetOption.Click += (_,
-                    args) =>
-                {
-                    Api.ResetGloveSkin(args.Player.SteamID, args.Player.Controller.Team, true);
-                    return ValueTask.CompletedTask;
-                };
-                skinMenu.AddOption(resetOption);
-                foreach (var paintkit in sorted)
-                {
-                    var option = new ButtonMenuOption(HtmlGradient.GenerateGradientText(EconService.GetLocalizedName(paintkit.LocalizedNames, player.PlayerLanguage.Value),
-                        paintkit.Rarity.Color.HexColor));
-
-                    option.Click += (_,
-                        args) =>
-                    {
-                        Api.UpdateGloveSkin(args.Player.SteamID, args.Player.Controller.Team, skin =>
-                        {
-                            skin.DefinitionIndex = (ushort)item.Index;
-                            skin.Paintkit = paintkit.Index;
-                        }, true);
-
-                        return ValueTask.CompletedTask;
-                    };
-
-                    option.Tag = paintkit.Index;
-
-
-                    skinMenu.AddOption(option);
-                }
-                return Task.FromResult(skinMenu.Build());
+                Title = "WeaponSkins",
+                Text = "Eldiven varsayılana sıfırlandı.",
+                Kind = ToastKind.Warning,
+                Key = "ws.glove"
             });
-
-            submenuOption.Tag = (ushort)item.Index;
-            submenuOption.Click += OnGloveSkinOptionClick;
-            main.AddOption(submenuOption);
-        }
-
-        var menu = main.Build();
-        return menu;
-    }
-
-    private ValueTask OnGloveMenuSkinOptionClick(object? sender, MenuOptionClickEventArgs args)
-    {
-        Core.Scheduler.NextTick(() =>
-        {
-            if (TryGetGloveDataInHand(args.Player, out var gloveInHand))
-            {
-                Core.Scheduler.NextTick(() =>
-                {
-                    var menu = Core.MenusAPI.GetCurrentMenu(args.Player);
-                    if (menu != null)
-                    {
-                        var option = menu.Options.FirstOrDefault(o =>
-                                o.Tag is ushort tag &&
-                                tag == gloveInHand.DefinitionIndex);
-
-                        if (option != null)
-                            menu.MoveToOption(args.Player, option);
-                    }
-                });
-            }
-
+            p.SendChat("[gold][WeaponSkins][/] Eldiven varsayılana sıfırlandı.");
         });
-        return ValueTask.CompletedTask;
-    }
 
-    public IMenuOption GetGloveSkinMenuSubmenuOption(IPlayer player)
-    {
-        if (!ItemPermissionService.CanUseGloveSkins(player.SteamID))
+        var sorted = paintkits.OrderByDescending(p => p.Rarity.Id).ToList();
+        foreach (var paintkit in sorted)
         {
-            return CreateDisabledOption(LocalizationService[player].MenuTitleGloves);
+            var skinName = EconService.GetLocalizedName(paintkit.LocalizedNames, player.PlayerLanguage.Value);
+
+            builder.Button(skinName, ctx =>
+            {
+                var p = ctx.Player;
+                Api.UpdateGloveSkin(p.SteamID, p.Controller.Team, skin =>
+                {
+                    skin.DefinitionIndex = (ushort)item.Index;
+                    skin.Paintkit = paintkit.Index;
+                }, true);
+
+                _hud?.Toast(p, new ToastOptions
+                {
+                    Title = "WeaponSkins",
+                    Text = $"{skinName} seçildi!",
+                    Kind = ToastKind.Success,
+                    Key = "ws.glove"
+                });
+
+                p.SendChat($"[gold][WeaponSkins][/] [lime]{skinName}[/] seçildi!");
+            });
         }
-
-        var skinOption = new SubmenuMenuOption(LocalizationService[player].MenuTitleGloves,
-            () => Task.FromResult(BuildGloveSkinMenu(player)));
-
-        if (TryGetGloveDataInHand(player, out var gloveInHand))
-        {
-            skinOption.Click += OnGloveMenuSkinOptionClick;
-        }
-
-        return skinOption;
     }
 }

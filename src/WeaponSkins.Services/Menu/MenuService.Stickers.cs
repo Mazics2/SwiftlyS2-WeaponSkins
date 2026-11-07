@@ -1,10 +1,7 @@
-using System.Diagnostics.CodeAnalysis;
+using PanoramaHud.Contract;
 
-using SwiftlyS2.Core.Menus.OptionsBase;
 using SwiftlyS2.Shared;
-using SwiftlyS2.Shared.Menus;
 using SwiftlyS2.Shared.Players;
-using SwiftlyS2.Shared.SchemaDefinitions;
 
 using WeaponSkins.Econ;
 using WeaponSkins.Shared;
@@ -13,15 +10,12 @@ namespace WeaponSkins;
 
 public partial class MenuService
 {
-    private Dictionary<int, StickerDefinition> StickerDefinitions { get; set; } = new();
-    private Dictionary<ulong /* steamid */, WeaponSkinData> _stickerOperatingWeaponSkins = new();
+    private readonly Dictionary<int, StickerDefinition> _cachedStickerDefinitions = new();
 
-    private string? GetStickerName(StickerData? data,
-        string language)
+    private string? GetStickerName(StickerData? data, string language)
     {
-        if (data == null) return null;
-        if (data.Id == 0) return null;
-        if (!StickerDefinitions.TryGetValue(data.Id, out var definition))
+        if (data == null || data.Id == 0) return null;
+        if (!_cachedStickerDefinitions.TryGetValue(data.Id, out var definition))
         {
             foreach (var (_, stickers) in EconService.StickerCollections)
             {
@@ -30,116 +24,123 @@ public partial class MenuService
                     if (sticker.Index == data.Id)
                     {
                         definition = sticker;
-                        StickerDefinitions[data.Id] = definition;
+                        _cachedStickerDefinitions[data.Id] = definition;
                         break;
                     }
                 }
+                if (definition != null) break;
             }
         }
 
         if (definition == null) return null;
-
         return EconService.GetLocalizedName(definition.LocalizedNames, language);
     }
 
-    private IMenuAPI BuildStickerMenuBySlot(IPlayer player,
-        int slot,
-        string language,
-        string title)
+    public void OpenStickerMenu(IPlayer player)
     {
-        var main = Core.MenusAPI.CreateBuilder();
-
-        main.Design.SetMenuTitle(title);
-        var resetOption = new ButtonMenuOption(LocalizationService[player].MenuReset);
-        resetOption.Click += (_,
-            args) =>
-        {
-            if (!_stickerOperatingWeaponSkins.TryGetValue(args.Player.SteamID, out var dataInHand))
-            {
-                return ValueTask.CompletedTask;
-            }
-
-            Api.UpdateWeaponSkin(args.Player.SteamID, args.Player.Controller.Team, dataInHand.DefinitionIndex,
-                skin =>
-                {
-                    skin.SetSticker(slot, null);
-                }, true);
-            return ValueTask.CompletedTask;
-        };
-
-        main.AddOption(resetOption);
-        foreach (var (_, stickerCollection) in EconService.StickerCollections)
-        {
-            main.AddOption(new SubmenuMenuOption(EconService.GetLocalizedName(stickerCollection.LocalizedNames, language), () =>
-            {
-                var stickerMenu = Core.MenusAPI.CreateBuilder();
-                stickerMenu.Design.SetMenuTitle(EconService.GetLocalizedName(stickerCollection.LocalizedNames, language));
-
-                foreach (var sticker in stickerCollection.Stickers)
-                {
-                    if (sticker.Index == 0) continue;
-                    var option = new ButtonMenuOption(HtmlGradient.GenerateGradientText(
-                        EconService.GetLocalizedName(sticker.LocalizedNames, language),
-                        sticker.Rarity.Color.HexColor));
-                    option.Click += (_,
-                        args) =>
-                    {
-                        if (!_stickerOperatingWeaponSkins.TryGetValue(args.Player.SteamID, out var dataInHand))
-                        {
-                            return ValueTask.CompletedTask;
-                        }
-
-                        Api.UpdateWeaponSkin(args.Player.SteamID, args.Player.Controller.Team,
-                            dataInHand.DefinitionIndex,
-                            skin =>
-                            {
-                                skin.SetSticker(slot, new StickerData { Id = sticker.Index, });
-                            }, true);
-                        return ValueTask.CompletedTask;
-                    };
-                    stickerMenu.AddOption(option);
-                }
-
-                return Task.FromResult(stickerMenu.Build());
-            }));
-        }
-
-        return main.Build();
+        if (_hud == null) return;
+        var builder = _hud.Menu($"ws.stickers.{player.SteamID}", LocalizationService[player].MenuTitleStickers);
+        BuildStickerSubmenu(builder, player);
+        builder.Build().Open(player);
     }
 
-    public IMenuAPI BuildStickerMenu(IPlayer player)
+    public void BuildStickerSubmenu(IMenuBuilder builder, IPlayer player)
     {
-        var main = Core.MenusAPI.CreateBuilder();
-        main.Design.SetMenuTitle(LocalizationService[player].MenuTitleStickers);
-
-        for (int i = 0; i < 6; i++)
-        {
-            var title =
-                $"[{i + 1}] Slot";
-            var slot = i;
-            main.AddOption(new SubmenuMenuOption(title,
-                () => Task.FromResult(BuildStickerMenuBySlot(player, slot, player.PlayerLanguage.Value, title))));
-        }
-
-        var menu = main.Build();
-        return menu;
-    }
-
-
-    public IMenuOption GetStickerMenuSubmenuOption(IPlayer player)
-    {
-        if (!ItemPermissionService.CanUseStickers(player.SteamID))
-        {
-            return CreateDisabledOption(LocalizationService[player].MenuTitleStickers);
-        }
+        builder.Description("Çıkartma Slotu Seçiniz");
 
         if (!TryGetWeaponDataInHand(player, out var dataInHand))
         {
-            return CreateDisabledOption(LocalizationService[player].MenuTitleStickers);
+            builder.Info("Lütfen önce elinize bir silah alınız!");
+            return;
         }
 
-        _stickerOperatingWeaponSkins[player.SteamID] = dataInHand;
-        return new SubmenuMenuOption(LocalizationService[player].MenuTitleStickers,
-            () => Task.FromResult(BuildStickerMenu(player)));
+        for (int i = 0; i < 5; i++)
+        {
+            int slot = i;
+            var currentSticker = dataInHand.GetSticker(slot);
+            var stickerName = GetStickerName(currentSticker, player.PlayerLanguage.Value);
+            var slotTitle = $"Slot {slot + 1}: [ {(stickerName ?? "Boş")} ]";
+
+            builder.Submenu(slotTitle, sub => BuildStickerCollectionsSubmenu(sub, player, dataInHand, slot));
+        }
+    }
+
+    public void BuildStickerCollectionsSubmenu(IMenuBuilder builder, IPlayer player, WeaponSkinData weaponData, int slot)
+    {
+        builder.Description($"Slot {slot + 1} Koleksiyon Seçiniz");
+
+        // 1. Reset option
+        builder.Button(LocalizationService[player].MenuReset, ctx =>
+        {
+            var p = ctx.Player;
+            Api.UpdateWeaponSkin(p.SteamID, p.Controller.Team, weaponData.DefinitionIndex, skin =>
+            {
+                skin.SetSticker(slot, null);
+            }, true);
+
+            _hud?.Toast(p, new ToastOptions
+            {
+                Title = "WeaponSkins",
+                Text = $"Slot {slot + 1} çıkartması kaldırıldı.",
+                Kind = ToastKind.Warning,
+                Key = "ws.sticker"
+            });
+            p.SendChat($"[gold][WeaponSkins][/] Slot {slot + 1} çıkartması kaldırıldı.");
+        });
+
+        foreach (var (_, collection) in EconService.StickerCollections)
+        {
+            var colName = EconService.GetLocalizedName(collection.LocalizedNames, player.PlayerLanguage.Value);
+            builder.Submenu(colName, sub => BuildStickerListSubmenu(sub, player, weaponData, slot, collection));
+        }
+    }
+
+    public void BuildStickerListSubmenu(IMenuBuilder builder, IPlayer player, WeaponSkinData weaponData, int slot, StickerCollectionDefinition collection)
+    {
+        var colName = EconService.GetLocalizedName(collection.LocalizedNames, player.PlayerLanguage.Value);
+        builder.Description($"{colName} Çıkartması Seçiniz");
+
+        // 1. Reset option
+        builder.Button(LocalizationService[player].MenuReset, ctx =>
+        {
+            var p = ctx.Player;
+            Api.UpdateWeaponSkin(p.SteamID, p.Controller.Team, weaponData.DefinitionIndex, skin =>
+            {
+                skin.SetSticker(slot, null);
+            }, true);
+
+            _hud?.Toast(p, new ToastOptions
+            {
+                Title = "WeaponSkins",
+                Text = $"Slot {slot + 1} çıkartması kaldırıldı.",
+                Kind = ToastKind.Warning,
+                Key = "ws.sticker"
+            });
+            p.SendChat($"[gold][WeaponSkins][/] Slot {slot + 1} çıkartması kaldırıldı.");
+        });
+
+        foreach (var sticker in collection.Stickers)
+        {
+            if (sticker.Index == 0) continue;
+            var stickerName = EconService.GetLocalizedName(sticker.LocalizedNames, player.PlayerLanguage.Value);
+
+            builder.Button(stickerName, ctx =>
+            {
+                var p = ctx.Player;
+                Api.UpdateWeaponSkin(p.SteamID, p.Controller.Team, weaponData.DefinitionIndex, skin =>
+                {
+                    skin.SetSticker(slot, new StickerData { Id = sticker.Index });
+                }, true);
+
+                _hud?.Toast(p, new ToastOptions
+                {
+                    Title = "WeaponSkins",
+                    Text = $"Slot {slot + 1}: {stickerName} ayarlandı!",
+                    Kind = ToastKind.Success,
+                    Key = "ws.sticker"
+                });
+                p.SendChat($"[gold][WeaponSkins][/] Slot {slot + 1} çıkartması [lime]{stickerName}[/] olarak ayarlandı!");
+            });
+        }
     }
 }

@@ -27,24 +27,22 @@ public partial class DatabaseService
 
     public async Task<IEnumerable<WeaponSkinData>> GetSkinsAsync(ulong steamId)
     {
-        return await fsql.Select<SkinModel>()
+        var list = await fsql.Select<SkinModel>()
             .Where(skin => skin.SteamID == steamId.ToString())
-            .ToListAsync()
-            .ContinueWith(task => 
-                task.Result
-                    .Where(skin => Utilities.IsWeaponDefinitionIndex(skin.DefinitionIndex))
-                    .Select(skin => skin.ToDataModel())
-                );
+            .ToListAsync();
+
+        return list
+            .Where(skin => Utilities.IsWeaponDefinitionIndex(skin.DefinitionIndex))
+            .Select(skin => skin.ToDataModel());
     }
 
     public async Task<IEnumerable<WeaponSkinData>> GetAllSkinsAsync()
     {
-        return await fsql.Select<SkinModel>().ToListAsync()
-            .ContinueWith(task => 
-                task.Result
-                    .Where(skin => Utilities.IsWeaponDefinitionIndex(skin.DefinitionIndex))
-                    .Select(skin => skin.ToDataModel())
-                );
+        var list = await fsql.Select<SkinModel>().ToListAsync();
+
+        return list
+            .Where(skin => Utilities.IsWeaponDefinitionIndex(skin.DefinitionIndex))
+            .Select(skin => skin.ToDataModel());
     }
 
     public async Task RemoveSkinAsync(ulong steamId,

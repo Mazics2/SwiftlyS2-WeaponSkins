@@ -151,12 +151,26 @@ public class StorageService : IDisposable
             }
 
             if (reply == null || stopping.IsCancellationRequested) return;
-            await Core.Scheduler.NextTickAsync(() =>
+            var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            Core.Scheduler.NextTick(() =>
             {
-                if (stopping.IsCancellationRequested) return;
-                var player = Core.PlayerManager.GetPlayerFromSessionId(sessionId);
-                if (player is { IsValid: true } && player.SteamID == steamId) reply(message);
-            }).WaitAsync(stopping);
+                if (stopping.IsCancellationRequested)
+                {
+                    tcs.TrySetCanceled(stopping);
+                    return;
+                }
+                try
+                {
+                    var player = Core.PlayerManager.GetPlayerFromSessionId(sessionId);
+                    if (player is { IsValid: true } && player.SteamID == steamId) reply(message);
+                    tcs.TrySetResult();
+                }
+                catch (Exception ex)
+                {
+                    tcs.TrySetException(ex);
+                }
+            });
+            await tcs.Task.WaitAsync(stopping);
         }
         catch (OperationCanceledException) when (stopping.IsCancellationRequested)
         {

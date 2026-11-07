@@ -1,134 +1,99 @@
-using SwiftlyS2.Core.Menus.OptionsBase;
+using PanoramaHud.Contract;
+
 using SwiftlyS2.Shared;
-using SwiftlyS2.Shared.Menus;
 using SwiftlyS2.Shared.Players;
+
+using WeaponSkins.Econ;
+using WeaponSkins.Shared;
 
 namespace WeaponSkins;
 
 public partial class MenuService
 {
-    private ValueTask OnWeaponSkinOptionClick(object? sender,
-        MenuOptionClickEventArgs args)
+    public void OpenWeaponSkinMenu(IPlayer player)
     {
-        Core.Scheduler.NextTick(() =>
-        {
-            if (TryGetWeaponDataInHand(args.Player, out var weaponInHand))
-            {
-                var menu = Core.MenusAPI.GetCurrentMenu(args.Player);
-                if (menu != null)
-                {
-                    var option = menu.Options.FirstOrDefault(o =>
-                            o.Tag is int tag &&
-                            tag == weaponInHand.Paintkit);
-
-                    if (option != null)
-                        menu.MoveToOption(args.Player, option);
-                }
-            }
-        });
-        return ValueTask.CompletedTask;
+        if (_hud == null) return;
+        var builder = _hud.Menu($"ws.weapons.{player.SteamID}", LocalizationService[player].MenuTitleSkins);
+        BuildWeaponSkinSubmenu(builder, player);
+        builder.Build().Open(player);
     }
 
-    public IMenuAPI BuildWeaponSkinMenu(IPlayer player)
+    public void BuildWeaponSkinSubmenu(IMenuBuilder builder, IPlayer player)
     {
-        var main = Core.MenusAPI.CreateBuilder();
-        main.Design.SetMenuTitle(LocalizationService[player].MenuTitleSkins);
+        builder.Description("Silah Seçiniz");
 
-        foreach (var (weapon, paintkits) in EconService.WeaponToPaintkits)
+        foreach (var (weaponKey, paintkits) in EconService.WeaponToPaintkits)
         {
-            var item = EconService.Items[weapon];
+            if (!EconService.Items.TryGetValue(weaponKey, out var item))
+            {
+                continue;
+            }
+
             if (!Utilities.IsWeaponDefinitionIndex(item.Index))
             {
                 continue;
             }
 
-            var submenuOption = new SubmenuMenuOption(EconService.GetLocalizedName(EconService.Items[weapon].LocalizedNames, player.PlayerLanguage.Value), () =>
-            {
-                var skinMenu = Core.MenusAPI.CreateBuilder();
-                skinMenu.Design.SetMenuTitleVisible(false);
-                var sorted = paintkits.OrderByDescending(p => p.Rarity.Id).ToList();
-                var resetOption = new ButtonMenuOption(LocalizationService[player].MenuReset);
-
-                resetOption.Click += (_,
-                    args) =>
-                {
-                    Api.ResetWeaponSkin(args.Player.SteamID, args.Player.Controller.Team, (ushort)item.Index, true);
-                    return ValueTask.CompletedTask;
-                };
-
-                skinMenu.AddOption(resetOption);
-                foreach (var paintkit in sorted)
-                {
-                    var option = new ButtonMenuOption(HtmlGradient.GenerateGradientText(
-                        EconService.GetLocalizedName(paintkit.LocalizedNames, player.PlayerLanguage.Value),
-                        paintkit.Rarity.Color.HexColor));
-
-                    option.Click += (_,
-                        args) =>
-                    {
-                        Api.UpdateWeaponSkin(
-                            args.Player.SteamID, args.Player.Controller.Team, (ushort)item.Index, skin =>
-                            {
-                                skin.Paintkit = paintkit.Index;
-                            }, true);
-
-                        return ValueTask.CompletedTask;
-                    };
-
-                    option.Tag = paintkit.Index;
-
-                    skinMenu.AddOption(option);
-                }
-
-                return Task.FromResult(skinMenu.Build());
-            });
-
-            submenuOption.Tag = (ushort)item.Index;
-            submenuOption.Click += OnWeaponSkinOptionClick;
-            main.AddOption(submenuOption);
+            var weaponName = EconService.GetLocalizedName(item.LocalizedNames, player.PlayerLanguage.Value);
+            builder.Submenu(weaponName, sub => BuildWeaponPaintkitsSubmenu(sub, player, item, paintkits));
         }
-
-        var menu = main.Build();
-        return menu;
     }
 
-    private ValueTask OnWeaponMenuSkinOptionClick(object? sender,
-        MenuOptionClickEventArgs args)
+    public void BuildWeaponPaintkitsSubmenu(IMenuBuilder builder, IPlayer player, ItemDefinition item, List<PaintkitDefinition> paintkits)
     {
-        Core.Scheduler.NextTick(() =>
-        {
-            if (TryGetWeaponInHand(args.Player, out var weaponInHand))
-            {
-                if (Utilities.IsWeaponDefinitionIndex(weaponInHand.AttributeManager.Item.ItemDefinitionIndex))
-                {
-                    var menu = Core.MenusAPI.GetCurrentMenu(args.Player);
-                    if (menu != null)
-                    {
-                        var option = menu.Options.FirstOrDefault(o =>
-                                o.Tag is ushort tag &&
-                                tag == weaponInHand.AttributeManager.Item.ItemDefinitionIndex);
+        var weaponName = EconService.GetLocalizedName(item.LocalizedNames, player.PlayerLanguage.Value);
+        builder.Description($"{weaponName} Kaplaması Seçiniz");
 
-                        if (option != null)
-                            menu.MoveToOption(args.Player, option);
+        // 1. Reset option
+        builder.Button(LocalizationService[player].MenuReset, ctx =>
+        {
+            var p = ctx.Player;
+            Api.ResetWeaponSkin(p.SteamID, p.Controller.Team, (ushort)item.Index, true);
+            _hud?.Toast(p, new ToastOptions
+            {
+                Title = "WeaponSkins",
+                Text = $"{weaponName} kaplaması sıfırlandı.",
+                Kind = ToastKind.Warning,
+                Key = "ws.skin"
+            });
+            p.SendChat($"[gold][WeaponSkins][/] {weaponName} kaplaması sıfırlandı.");
+        });
+
+        var sorted = paintkits.OrderByDescending(p => p.Rarity.Id).ToList();
+        foreach (var paintkit in sorted)
+        {
+            var skinName = EconService.GetLocalizedName(paintkit.LocalizedNames, player.PlayerLanguage.Value);
+
+            builder.Button(skinName, ctx =>
+            {
+                var p = ctx.Player;
+                Api.UpdateWeaponSkin(p.SteamID, p.Controller.Team, (ushort)item.Index, skin =>
+                {
+                    skin.Paintkit = paintkit.Index;
+                }, true);
+
+                _hud?.Toast(p, new ToastOptions
+                {
+                    Title = "WeaponSkins",
+                    Text = $"{skinName} seçildi!",
+                    Kind = ToastKind.Success,
+                    Key = "ws.skin"
+                });
+
+                if (p.IsAlive)
+                {
+                    var activeWep = p.PlayerPawn?.WeaponServices?.ActiveWeapon.Value;
+                    if (activeWep is { IsValid: true } &&
+                        activeWep.AttributeManager.Item.ItemDefinitionIndex == (ushort)item.Index)
+                    {
+                        p.SendChat($"[gold][WeaponSkins][/] [lime]{skinName}[/] seçildi ve elinize verildi!");
+                    }
+                    else
+                    {
+                        p.SendChat($"[gold][WeaponSkins][/] [lime]{skinName}[/] seçildi!");
                     }
                 }
-            }
-        });
-        return ValueTask.CompletedTask;
-    }
-
-    public IMenuOption GetWeaponSkinMenuSubmenuOption(IPlayer player)
-    {
-        if (!ItemPermissionService.CanUseWeaponSkins(player.SteamID))
-        {
-            return CreateDisabledOption(LocalizationService[player].MenuTitleSkins);
+            });
         }
-
-        var skinOption = new SubmenuMenuOption(LocalizationService[player].MenuTitleSkins,
-            () => Task.FromResult(BuildWeaponSkinMenu(player)));
-
-        skinOption.Click += OnWeaponMenuSkinOptionClick;
-
-        return skinOption;
     }
 }

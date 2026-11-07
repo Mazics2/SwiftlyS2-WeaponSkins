@@ -1,127 +1,103 @@
-using System.Numerics;
+using PanoramaHud.Contract;
 
-using SwiftlyS2.Core.Menus.OptionsBase;
 using SwiftlyS2.Shared;
-using SwiftlyS2.Shared.Menus;
 using SwiftlyS2.Shared.Players;
+
+using WeaponSkins.Econ;
+using WeaponSkins.Shared;
 
 namespace WeaponSkins;
 
 public partial class MenuService
 {
-    private ValueTask OnKnifeSkinOptionClick(object? sender, MenuOptionClickEventArgs args)
+    public void OpenKnifeSkinMenu(IPlayer player)
     {
-        Core.Scheduler.NextTick(() =>
-        {
-            if (TryGetKnifeDataInHand(args.Player, out var knifeInHand))
-            {
-                var menu = Core.MenusAPI.GetCurrentMenu(args.Player);
-                if (menu != null)
-                {
-                    var option = menu.Options.FirstOrDefault(o =>
-                            o.Tag is int tag &&
-                            tag == knifeInHand.Paintkit);
-
-                    if (option != null)
-                        menu.MoveToOption(args.Player, option);
-                }
-            }
-        });
-        return ValueTask.CompletedTask;
+        if (_hud == null) return;
+        var builder = _hud.Menu($"ws.knives.{player.SteamID}", LocalizationService[player].MenuTitleKnifes);
+        BuildKnifeSkinSubmenu(builder, player);
+        builder.Build().Open(player);
     }
 
-    public IMenuAPI BuildKnifeSkinMenu(IPlayer player)
+    public void BuildKnifeSkinSubmenu(IMenuBuilder builder, IPlayer player)
     {
-        var main = Core.MenusAPI.CreateBuilder();
-        main.Design.SetMenuTitle(LocalizationService[player].MenuTitleKnifes);
+        builder.Description("Bıçak Türü Seçiniz");
 
-        foreach (var (knife, paintkits) in EconService.WeaponToPaintkits)
+        foreach (var (knifeKey, paintkits) in EconService.WeaponToPaintkits)
         {
-            var item = EconService.Items[knife];
+            if (!EconService.Items.TryGetValue(knifeKey, out var item))
+            {
+                continue;
+            }
+
             if (!Utilities.IsKnifeDefinitionIndex(item.Index))
             {
                 continue;
             }
 
-            var submenuOption = new SubmenuMenuOption(EconService.GetLocalizedName(EconService.Items[knife].LocalizedNames, player.PlayerLanguage.Value), () =>
+            var knifeName = EconService.GetLocalizedName(item.LocalizedNames, player.PlayerLanguage.Value);
+            builder.Submenu(knifeName, sub => BuildKnifePaintkitsSubmenu(sub, player, item, paintkits));
+        }
+    }
+
+    public void BuildKnifePaintkitsSubmenu(IMenuBuilder builder, IPlayer player, ItemDefinition item, List<PaintkitDefinition> paintkits)
+    {
+        var knifeName = EconService.GetLocalizedName(item.LocalizedNames, player.PlayerLanguage.Value);
+        builder.Description($"{knifeName} Kaplaması Seçiniz");
+
+        // 1. Reset option
+        builder.Button(LocalizationService[player].MenuReset, ctx =>
+        {
+            var p = ctx.Player;
+            Api.ResetKnifeSkin(p.SteamID, p.Controller.Team, true);
+            _hud?.Toast(p, new ToastOptions
             {
-                var skinMenu = Core.MenusAPI.CreateBuilder();
-                skinMenu.Design.SetMenuTitleVisible(false);
-                var sorted = paintkits.OrderByDescending(p => p.Rarity.Id).ToList();
-                var resetOption = new ButtonMenuOption(LocalizationService[player].MenuReset);
-                resetOption.Click += (_,
-                    args) =>
-                {
-                    Api.ResetKnifeSkin(args.Player.SteamID, args.Player.Controller.Team, true);
-                    return ValueTask.CompletedTask;
-                };
-                skinMenu.AddOption(resetOption);
-                foreach (var paintkit in sorted)
-                {
-                    var option = new ButtonMenuOption(HtmlGradient.GenerateGradientText(EconService.GetLocalizedName(paintkit.LocalizedNames, player.PlayerLanguage.Value),
-                        paintkit.Rarity.Color.HexColor));
-
-                    option.Click += (_,
-                        args) =>
-                    {
-                        Api.UpdateKnifeSkin(args.Player.SteamID, args.Player.Controller.Team, (knife) =>
-                        {
-                            knife.DefinitionIndex = (ushort)item.Index;
-                            knife.Paintkit = paintkit.Index;
-                        }, true);
-
-                        return ValueTask.CompletedTask;
-                    };
-
-                    option.Tag = paintkit.Index;
-
-                    skinMenu.AddOption(option);
-                }
-                return Task.FromResult(skinMenu.Build());
+                Title = "WeaponSkins",
+                Text = "Bıçak varsayılana sıfırlandı.",
+                Kind = ToastKind.Warning,
+                Key = "ws.knife"
             });
-
-            submenuOption.Tag = (ushort)item.Index;
-            submenuOption.Click += OnKnifeSkinOptionClick;
-            main.AddOption(submenuOption);
-        }
-
-        var menu = main.Build();
-        return menu;
-    }
-
-    private ValueTask OnKnifeMenuSkinOptionClick(object? sender, MenuOptionClickEventArgs args)
-    {
-        Core.Scheduler.NextTick(() =>
-        {
-            if (TryGetKnifeDataInHand(args.Player, out var knifeInHand))
-            {
-                var menu = Core.MenusAPI.GetCurrentMenu(args.Player);
-                if (menu != null)
-                {
-                    var option = menu.Options.FirstOrDefault(o =>
-                            o.Tag is ushort tag &&
-                            tag == knifeInHand.DefinitionIndex);
-
-                    if (option != null)
-                        menu.MoveToOption(args.Player, option);
-                }
-            }
+            p.SendChat("[gold][WeaponSkins][/] Bıçak varsayılana sıfırlandı.");
         });
-        return ValueTask.CompletedTask;
-    }
 
-    public IMenuOption GetKnifeSkinMenuSubmenuOption(IPlayer player)
-    {
-        if (!ItemPermissionService.CanUseKnifeSkins(player.SteamID))
+        var sorted = paintkits.OrderByDescending(p => p.Rarity.Id).ToList();
+        foreach (var paintkit in sorted)
         {
-            return CreateDisabledOption(LocalizationService[player].MenuTitleKnifes);
+            var skinName = EconService.GetLocalizedName(paintkit.LocalizedNames, player.PlayerLanguage.Value);
+
+            builder.Button(skinName, ctx =>
+            {
+                var p = ctx.Player;
+                Api.UpdateKnifeSkin(p.SteamID, p.Controller.Team, knife =>
+                {
+                    knife.DefinitionIndex = (ushort)item.Index;
+                    knife.Paintkit = paintkit.Index;
+                }, true);
+
+                _hud?.Toast(p, new ToastOptions
+                {
+                    Title = "WeaponSkins",
+                    Text = $"{skinName} seçildi!",
+                    Kind = ToastKind.Success,
+                    Key = "ws.knife"
+                });
+
+                if (p.IsAlive)
+                {
+                    var activeWep = p.PlayerPawn?.WeaponServices?.ActiveWeapon.Value;
+                    bool isHoldingKnife = activeWep is { IsValid: true } &&
+                        (Utilities.IsKnifeDefinitionIndex(activeWep.AttributeManager.Item.ItemDefinitionIndex) ||
+                         activeWep.DesignerName?.Contains("knife") == true);
+
+                    if (isHoldingKnife)
+                    {
+                        p.SendChat($"[gold][WeaponSkins][/] [lime]{skinName}[/] seçildi ve elinize verildi!");
+                    }
+                    else
+                    {
+                        p.SendChat($"[gold][WeaponSkins][/] [lime]{skinName}[/] seçildi!");
+                    }
+                }
+            });
         }
-
-        var skinOption = new SubmenuMenuOption(LocalizationService[player].MenuTitleKnifes,
-            () => Task.FromResult(BuildKnifeSkinMenu(player)));
-
-        skinOption.Click += OnKnifeMenuSkinOptionClick;
-
-        return skinOption;
     }
 }

@@ -16,6 +16,13 @@ namespace WeaponSkins.Services;
 
 public class HookInventoryUpdateService : IInventoryUpdateService, IDisposable
 {
+    public static HookInventoryUpdateService? Instance { get; private set; }
+
+    public static void Reset()
+    {
+        Instance = null;
+    }
+
     private readonly Dictionary<ulong, (int MusicKitId, ushort? InventoryMusicId)> _originalMusicKits = new();
     private ISwiftlyCore Core { get; }
     private PlayerService PlayerService { get; }
@@ -35,6 +42,7 @@ public class HookInventoryUpdateService : IInventoryUpdateService, IDisposable
         DataService dataService,
         EconService econService)
     {
+        Instance = this;
         Core = core;
         Api = api;
         PlayerService = playerService;
@@ -70,32 +78,49 @@ public class HookInventoryUpdateService : IInventoryUpdateService, IDisposable
     {
         try
         {
-            var ownerHandle = weapon.OwnerEntity;
-            if (!ownerHandle.IsValid) return;
-            var owner = ownerHandle.Value?.As<CCSPlayerPawn>();
-            if (owner == null || !owner.IsValid) return;
-            var controllerHandle = owner.Controller;
-            if (!controllerHandle.IsValid) return;
-            var controller = controllerHandle.Value;
-            if (controller == null || !controller.IsValid) return;
-            var steamId = controller.SteamID;
-            var team = controller.Team;
+            if (weapon is not { IsValid: true }) return;
+
+            ulong steamId = 0;
+            Team team = Team.None;
+            CCSPlayerPawn? ownerPawn = null;
+
+            if (weapon.OwnerEntity.IsValid && weapon.OwnerEntity.Value is { IsValid: true } wepOwner)
+            {
+                ownerPawn = wepOwner.As<CCSPlayerPawn>();
+            }
+
+            if (ownerPawn == null || !ownerPawn.IsValid)
+            {
+                foreach (var p in Core.PlayerManager.GetAllPlayers())
+                {
+                    if (p.PlayerPawn is { IsValid: true } pawn &&
+                        pawn.ItemServices is { IsValid: true } isvc &&
+                        isvc.Address == services.Address)
+                    {
+                        ownerPawn = pawn;
+                        steamId = p.SteamID;
+                        team = p.Controller?.Team ?? Team.None;
+                        break;
+                    }
+                }
+            }
+            else if (ownerPawn.Controller.IsValid && ownerPawn.Controller.Value is { IsValid: true } ctrl)
+            {
+                steamId = ctrl.SteamID;
+                team = ctrl.Team;
+            }
+
+            if (steamId == 0 || team == Team.None) return;
             if (weapon.Identity is not { IsValid: true } identity) return;
             var weaponHandle = identity.EntityHandle;
+
             // GiveItem can still initialize attributes after this hook. Apply once it has finished.
             Core.Scheduler.NextTick(() =>
             {
                 try
                 {
                     var currentWeapon = weaponHandle.Value?.As<CBasePlayerWeapon>();
-                    var currentOwner = ownerHandle.Value?.As<CCSPlayerPawn>();
-                    var currentController = controllerHandle.Value;
-                    if (currentWeapon is not { IsValid: true } || currentOwner is not { IsValid: true } ||
-                        currentController is not { IsValid: true } || currentController.SteamID != steamId ||
-                        currentController.Team != team || currentWeapon.OwnerEntity.Value?.Address != currentOwner.Address)
-                    {
-                        return;
-                    }
+                    if (currentWeapon is not { IsValid: true }) return;
 
                     ApplyWeaponSkin(steamId, team, currentWeapon);
                 }
@@ -149,12 +174,18 @@ public class HookInventoryUpdateService : IInventoryUpdateService, IDisposable
 
         Core.Scheduler.NextTick(() =>
         {
+            ApplyPlayerWeapons(player);
             ApplyPlayerGlove(player);
             ApplyPlayerAgent(player);
+            if (Api.TryGetKnifeSkin(player.SteamID, player.Controller.Team, out var knife) && Utilities.IsKnifeDefinitionIndex(knife.DefinitionIndex))
+            {
+                player.RegiveKnife(selectKnife: false);
+            }
         });
 
-        Core.Scheduler.DelayBySeconds(0.1f, () =>
+        Core.Scheduler.DelayBySeconds(0.15f, () =>
         {
+            ApplyPlayerWeapons(player);
             ApplyPlayerGlove(player);
             ApplyPlayerAgent(player);
         });
@@ -257,19 +288,27 @@ public class HookInventoryUpdateService : IInventoryUpdateService, IDisposable
 
                     foreach (var skin in updatedSkins)
                     {
-                        foreach (var weapon in player.PlayerPawn!.WeaponServices!.MyWeapons)
+                        var matchingWeapons = player.PlayerPawn?.WeaponServices?.MyWeapons
+                            .Where(w => w.Value is { IsValid: true } currentWeapon &&
+                                        currentWeapon.AttributeManager.Item.ItemDefinitionIndex == skin.DefinitionIndex &&
+                                        player.Controller.Team == skin.Team)
+                            .Select(w => w.Value)
+                            .ToList();
+
+                        if (matchingWeapons != null)
                         {
-                            if (weapon.Value is { IsValid: true } currentWeapon &&
-                                currentWeapon.AttributeManager.Item.ItemDefinitionIndex == skin.DefinitionIndex &&
-                                player.Controller.Team == skin.Team)
+                            foreach (var wep in matchingWeapons)
                             {
-                                Core.Scheduler.NextTick(() =>
+                                if (wep != null)
                                 {
-                                    if (player.IsAlive() && player.Controller.Team == skin.Team)
+                                    Core.Scheduler.NextTick(() =>
                                     {
-                                        player.RegiveWeapon(weapon.Value, skin.DefinitionIndex);
-                                    }
-                                });
+                                        if (player.IsAlive() && player.Controller.Team == skin.Team && wep.IsValid)
+                                        {
+                                            player.RegiveWeapon(wep, skin.DefinitionIndex);
+                                        }
+                                    });
+                                }
                             }
                         }
                     }
@@ -301,19 +340,29 @@ public class HookInventoryUpdateService : IInventoryUpdateService, IDisposable
                 {
                     ApplyKnifeSkins(player, updatedKnives);
 
-                    foreach (var knife in updatedKnives)
+                    bool isHoldingKnife = false;
+                    var activeWep = player.PlayerPawn?.WeaponServices?.ActiveWeapon.Value;
+                    if (activeWep is { IsValid: true } &&
+                        (Utilities.IsKnifeDefinitionIndex(activeWep.AttributeManager.Item.ItemDefinitionIndex) ||
+                         activeWep.DesignerName?.Contains("knife") == true))
                     {
-                        foreach (var weapon in player.PlayerPawn!.WeaponServices!.MyWeapons)
+                        isHoldingKnife = true;
+                    }
+
+                    bool hasKnife = player.PlayerPawn?.WeaponServices?.MyWeapons.Any(w =>
+                        w.Value is { IsValid: true } kw &&
+                        (Utilities.IsKnifeDefinitionIndex(kw.AttributeManager.Item.ItemDefinitionIndex) ||
+                         kw.DesignerName?.Contains("knife") == true)) == true;
+
+                    if (hasKnife || isHoldingKnife)
+                    {
+                        Core.Scheduler.NextTick(() =>
                         {
-                            if (weapon.Value!.AttributeManager.Item.ItemDefinitionIndex == knife.DefinitionIndex &&
-                                player.Controller.Team == knife.Team)
+                            if (player.IsAlive())
                             {
-                                Core.Scheduler.NextTick(() =>
-                                {
-                                    player.RegiveKnife();
-                                });
+                                player.RegiveKnife(selectKnife: isHoldingKnife);
                             }
-                        }
+                        });
                     }
                 }
             }
@@ -358,10 +407,15 @@ public class HookInventoryUpdateService : IInventoryUpdateService, IDisposable
                 {
                     if (player.IsAlive())
                     {
-                        player.RegiveWeapon(
-                            player.PlayerPawn!.WeaponServices!.MyWeapons.FirstOrDefault(w =>
-                                w.Value!.AttributeManager.Item.ItemDefinitionIndex == definitionIndex &&
-                                player.Controller.Team == team).Value!, definitionIndex);
+                        var wep = player.PlayerPawn?.WeaponServices?.MyWeapons.FirstOrDefault(w =>
+                            w.Value is { IsValid: true } cw &&
+                            cw.AttributeManager.Item.ItemDefinitionIndex == definitionIndex &&
+                            player.Controller.Team == team).Value;
+
+                        if (wep is { IsValid: true })
+                        {
+                            player.RegiveWeapon(wep, definitionIndex);
+                        }
                     }
                 });
             }
@@ -375,11 +429,20 @@ public class HookInventoryUpdateService : IInventoryUpdateService, IDisposable
         {
             if (PlayerService.TryGetPlayer(steamid, out var player))
             {
+                bool isHoldingKnife = false;
+                var activeWep = player.PlayerPawn?.WeaponServices?.ActiveWeapon.Value;
+                if (activeWep is { IsValid: true } &&
+                    (Utilities.IsKnifeDefinitionIndex(activeWep.AttributeManager.Item.ItemDefinitionIndex) ||
+                     activeWep.DesignerName?.Contains("knife") == true))
+                {
+                    isHoldingKnife = true;
+                }
+
                 Core.Scheduler.NextTick(() =>
                 {
                     if (player.IsAlive())
                     {
-                        player.RegiveKnife();
+                        player.RegiveKnife(selectKnife: isHoldingKnife);
                     }
                 });
             }
@@ -461,7 +524,7 @@ public class HookInventoryUpdateService : IInventoryUpdateService, IDisposable
         ApplyGlove(player, pawn);
     }
 
-    private void ApplyWeaponSkin(ulong steamId,
+    public void ApplyWeaponSkin(ulong steamId,
         Team team,
         CBasePlayerWeapon weapon)
     {
@@ -485,10 +548,16 @@ public class HookInventoryUpdateService : IInventoryUpdateService, IDisposable
         }
     }
 
-    private void ApplyWeaponAttributes(CBasePlayerWeapon weapon,
+    public void ApplyWeaponAttributes(CBasePlayerWeapon weapon,
         WeaponSkinData skin)
     {
         WeaponAppearance.Apply(weapon, skin);
+        try
+        {
+            weapon.AcceptInput("ChangeSubclass", skin.DefinitionIndex.ToString());
+        }
+        catch { }
+
         var classname = Core.Helpers.GetClassnameByDefinitionIndex(skin.DefinitionIndex);
         if (string.IsNullOrWhiteSpace(classname) || !EconService.WeaponToPaintkits.TryGetValue(classname, out var paintkits))
         {
@@ -497,48 +566,18 @@ public class HookInventoryUpdateService : IInventoryUpdateService, IDisposable
         }
 
         var useLegacy = paintkits.FirstOrDefault(p => p.Index == skin.Paintkit)?.UseLegacyModel;
-        weapon.AcceptInputAsync("SetBodygroup", value: $"body,{(useLegacy == true ? 1 : 0)}");
+        weapon.AcceptInput("SetBodygroup", value: $"body,{(useLegacy == true ? 1 : 0)}");
     }
 
-    private void ApplyKnifeAttributes(CBasePlayerWeapon weapon,
+    public void ApplyKnifeAttributes(CBasePlayerWeapon weapon,
         KnifeSkinData knife)
     {
-        var item = weapon.AttributeManager.Item;
-        item.EntityQuality = (int)knife.Quality;
-
-        if (knife.Nametag != null)
+        WeaponAppearance.Apply(weapon, knife);
+        try
         {
-            item.CustomName = knife.Nametag;
+            weapon.AcceptInput("ChangeSubclass", knife.DefinitionIndex.ToString());
         }
-
-        if (item.ItemDefinitionIndex != knife.DefinitionIndex)
-        {
-            weapon.AcceptInputAsync("ChangeSubclass", knife.DefinitionIndex.ToString());
-        }
-
-        item.ItemDefinitionIndex = knife.DefinitionIndex;
-
-
-        if (knife.Quality == EconItemQuality.StatTrak)
-        {
-            var val = BitConverter.Int32BitsToSingle(knife.StattrakCount);
-            item.AttributeList.SetOrAddAttribute("kill eater", val);
-            item.AttributeList.SetOrAddAttribute("kill eater score type", 0);
-            item.NetworkedDynamicAttributes.SetOrAddAttribute("kill eater", val);
-            item.NetworkedDynamicAttributes.SetOrAddAttribute("kill eater score type", 0);
-        }
-        else
-        {
-            item.AttributeList.Attributes.RemoveAll();
-            item.NetworkedDynamicAttributes.Attributes.RemoveAll();
-        }
-
-        item.NetworkedDynamicAttributes.SetOrAddAttribute("set item texture prefab", knife.Paintkit);
-        item.NetworkedDynamicAttributes.SetOrAddAttribute("set item texture seed", knife.PaintkitSeed);
-        item.NetworkedDynamicAttributes.SetOrAddAttribute("set item texture wear", knife.PaintkitWear);
-        item.AttributeList.SetOrAddAttribute("set item texture prefab", knife.Paintkit);
-        item.AttributeList.SetOrAddAttribute("set item texture seed", knife.PaintkitSeed);
-        item.AttributeList.SetOrAddAttribute("set item texture wear", knife.PaintkitWear);
+        catch { }
     }
 
     private void ApplyGlove(IPlayer player,
@@ -666,5 +705,6 @@ public class HookInventoryUpdateService : IInventoryUpdateService, IDisposable
             if (player is { IsValid: true, Controller.IsValid: true }) ResetMusicKit(player.SteamID);
         }
         _originalMusicKits.Clear();
+        Instance = null;
     }
 }

@@ -33,6 +33,15 @@
     <PackageReference Include="ValveKeyValue" Version="0.20.0.417" />
     <PackageReference Include="SwiftlyS2.CS2" Version="1.4.2" ExcludeAssets="runtime" PrivateAssets="all" />
     <ProjectReference Include="WeaponSkins.Shared\WeaponSkins.Shared.csproj" />
+    <ProjectReference Include="..\SwiftlyS2-MenuApi\MenuApi.Contract\MenuApi.Contract.csproj" ExcludeAssets="runtime" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="PanoramaHud.Contract">
+      <HintPath>$(MSBuildThisFileDirectory)lib/PanoramaHud.Contract.dll</HintPath>
+      <Private>false</Private>
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </Reference>
   </ItemGroup>
 
   <ItemGroup>
@@ -58,4 +67,4 @@
     <ZipDirectory SourceDirectory="$(PublishDir)../" DestinationFile="$(OutputPath)../$(AssemblyName).zip" Overwrite="true" />
   </Target>
 
-</Project> 
+</Project>

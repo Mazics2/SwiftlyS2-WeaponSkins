@@ -32,7 +32,7 @@ public class DatabaseSynchronizeService
             var gloves = (await storage.GetAllGlovesAsync().WaitAsync(stopping)).ToArray();
             var agents = (await storage.GetAllAgentsAsync().WaitAsync(stopping)).ToArray();
             var musicKits = (await storage.GetAllMusicKitsAsync().WaitAsync(stopping)).ToArray();
-            await Core.Scheduler.NextTickAsync(() =>
+            await ScheduleOnNextTickAsync(() =>
             {
                 if (stopping.IsCancellationRequested) return;
                 foreach (var skin in skins) DataService.WeaponDataService.StoreSkin(skin);
@@ -40,7 +40,7 @@ public class DatabaseSynchronizeService
                 foreach (var glove in gloves) DataService.GloveDataService.StoreGlove(glove);
                 foreach (var agent in agents) DataService.AgentDataService.SetAgent(agent.SteamID, agent.Team, agent.AgentIndex);
                 foreach (var musicKit in musicKits) DataService.MusicKitDataService.SetMusicKit(musicKit.SteamID, musicKit.MusicKitIndex);
-            }).WaitAsync(stopping);
+            }, stopping);
         }
         finally
         {
@@ -62,7 +62,7 @@ public class DatabaseSynchronizeService
             var agents = (await storage.GetAgentsAsync(steamId).WaitAsync(stopping)).Where(agent => agent.SteamID == steamId).ToArray();
             var musicKits = (await storage.GetMusicKitsAsync(steamId).WaitAsync(stopping)).Where(musicKit => musicKit.SteamID == steamId).ToArray();
 
-            return await Core.Scheduler.NextTickAsync(() =>
+            return await ScheduleOnNextTickAsync(() =>
             {
                 if (stopping.IsCancellationRequested) return false;
                 var player = Core.PlayerManager.GetPlayerFromSessionId(sessionId);
@@ -84,11 +84,68 @@ public class DatabaseSynchronizeService
 
                 InventoryUpdateService.RefreshPlayer(steamId, hadGlove);
                 return true;
-            }).WaitAsync(stopping);
+            }, stopping);
         }
         finally
         {
             synchronization.Release();
         }
+    }
+
+    private Task ScheduleOnNextTickAsync(Action action, CancellationToken ct = default)
+    {
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (ct.IsCancellationRequested)
+        {
+            tcs.SetCanceled(ct);
+            return tcs.Task;
+        }
+
+        Core.Scheduler.NextTick(() =>
+        {
+            if (ct.IsCancellationRequested)
+            {
+                tcs.TrySetCanceled(ct);
+                return;
+            }
+            try
+            {
+                action();
+                tcs.TrySetResult();
+            }
+            catch (Exception ex)
+            {
+                tcs.TrySetException(ex);
+            }
+        });
+        return tcs.Task;
+    }
+
+    private Task<T> ScheduleOnNextTickAsync<T>(Func<T> func, CancellationToken ct = default)
+    {
+        var tcs = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (ct.IsCancellationRequested)
+        {
+            tcs.SetCanceled(ct);
+            return tcs.Task;
+        }
+
+        Core.Scheduler.NextTick(() =>
+        {
+            if (ct.IsCancellationRequested)
+            {
+                tcs.TrySetCanceled(ct);
+                return;
+            }
+            try
+            {
+                tcs.TrySetResult(func());
+            }
+            catch (Exception ex)
+            {
+                tcs.TrySetException(ex);
+            }
+        });
+        return tcs.Task;
     }
 }
