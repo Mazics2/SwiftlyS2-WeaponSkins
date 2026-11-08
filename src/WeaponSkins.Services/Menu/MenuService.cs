@@ -3,6 +3,8 @@ using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 
+using MenuApi.API;
+
 using Microsoft.Extensions.Logging;
 
 using PanoramaHud.Contract;
@@ -19,6 +21,14 @@ using WeaponSkins.Shared;
 
 namespace WeaponSkins;
 
+public enum TargetTeamMode
+{
+    BothTeams = 0,
+    OnlyT = 1,
+    OnlyCT = 2,
+    CurrentTeam = 3
+}
+
 public partial class MenuService : IDisposable
 {
     private ISwiftlyCore Core { get; init; }
@@ -31,9 +41,13 @@ public partial class MenuService : IDisposable
 
     private IPanoramaHudApi? _hudApi;
     private IHudScope? _hud;
+    private IMenuApi? _menuApi;
 
     public IPanoramaHudApi? HudApi => _hudApi;
     public IHudScope? Hud => _hud;
+    public IMenuApi? MenuApi => _menuApi;
+
+    private readonly ConcurrentDictionary<ulong, TargetTeamMode> _playerTeamModes = new();
 
     public sealed class ChatInputSession
     {
@@ -73,6 +87,126 @@ public partial class MenuService : IDisposable
         Logger.LogInformation("PanoramaHud registered successfully in WeaponSkins.");
     }
 
+    public void SetMenuApi(IMenuApi? menuApi)
+    {
+        _menuApi = menuApi;
+        if (menuApi != null)
+        {
+            Logger.LogInformation("MenuApi registered successfully in WeaponSkins MenuService.");
+        }
+    }
+
+    public TargetTeamMode GetPlayerTeamMode(ulong steamId)
+    {
+        return _playerTeamModes.GetOrAdd(steamId, TargetTeamMode.BothTeams);
+    }
+
+    public void SetPlayerTeamMode(ulong steamId, TargetTeamMode mode)
+    {
+        _playerTeamModes[steamId] = mode;
+    }
+
+    public TargetTeamMode CyclePlayerTeamMode(ulong steamId)
+    {
+        var next = GetPlayerTeamMode(steamId) switch
+        {
+            TargetTeamMode.BothTeams => TargetTeamMode.OnlyT,
+            TargetTeamMode.OnlyT => TargetTeamMode.OnlyCT,
+            TargetTeamMode.OnlyCT => TargetTeamMode.CurrentTeam,
+            _ => TargetTeamMode.BothTeams
+        };
+        _playerTeamModes[steamId] = next;
+        return next;
+    }
+
+    public string GetTeamModeDisplayName(ulong steamId)
+    {
+        return GetPlayerTeamMode(steamId) switch
+        {
+            TargetTeamMode.BothTeams => "Her İki Takım (T & CT)",
+            TargetTeamMode.OnlyT => "Sadece Terörist (T)",
+            TargetTeamMode.OnlyCT => "Sadece Anti-Terörist (CT)",
+            TargetTeamMode.CurrentTeam => "Mevcut Takımım",
+            _ => "Her İki Takım (T & CT)"
+        };
+    }
+
+    public Team GetPlayerEffectiveTeam(IPlayer player)
+    {
+        var team = player.Controller?.Team ?? Team.T;
+        return team is Team.T or Team.CT ? team : Team.T;
+    }
+
+    public Team GetPrimaryPreviewTeam(IPlayer player)
+    {
+        return GetPlayerTeamMode(player.SteamID) switch
+        {
+            TargetTeamMode.OnlyT => Team.T,
+            TargetTeamMode.OnlyCT => Team.CT,
+            _ => GetPlayerEffectiveTeam(player)
+        };
+    }
+
+    public Team[] GetTargetTeams(IPlayer player)
+    {
+        return GetPlayerTeamMode(player.SteamID) switch
+        {
+            TargetTeamMode.BothTeams => [Team.T, Team.CT],
+            TargetTeamMode.OnlyT => [Team.T],
+            TargetTeamMode.OnlyCT => [Team.CT],
+            TargetTeamMode.CurrentTeam => [GetPlayerEffectiveTeam(player)],
+            _ => [Team.T, Team.CT]
+        };
+    }
+
+    public void UpdateWeaponSkinForSelectedTeams(IPlayer player, ushort defIndex, Action<WeaponSkinData> action, bool permanent = true)
+    {
+        foreach (var team in GetTargetTeams(player))
+        {
+            Api.UpdateWeaponSkin(player.SteamID, team, defIndex, action, permanent);
+        }
+    }
+
+    public void ResetWeaponSkinForSelectedTeams(IPlayer player, ushort defIndex, bool permanent = true)
+    {
+        foreach (var team in GetTargetTeams(player))
+        {
+            Api.ResetWeaponSkin(player.SteamID, team, defIndex, permanent);
+        }
+    }
+
+    public void UpdateKnifeSkinForSelectedTeams(IPlayer player, Action<KnifeSkinData> action, bool permanent = true)
+    {
+        foreach (var team in GetTargetTeams(player))
+        {
+            Api.UpdateKnifeSkin(player.SteamID, team, action, permanent);
+        }
+    }
+
+    public void ResetKnifeSkinForSelectedTeams(IPlayer player, bool permanent = true)
+    {
+        foreach (var team in GetTargetTeams(player))
+        {
+            Api.ResetKnifeSkin(player.SteamID, team, permanent);
+        }
+    }
+
+    public void UpdateGloveSkinForSelectedTeams(IPlayer player, Action<GloveData> action, bool permanent = true)
+    {
+        foreach (var team in GetTargetTeams(player))
+        {
+            Api.UpdateGloveSkin(player.SteamID, team, action, permanent);
+        }
+    }
+
+    public void ResetGloveSkinForSelectedTeams(IPlayer player, bool permanent = true)
+    {
+        foreach (var team in GetTargetTeams(player))
+        {
+            Api.ResetGloveSkin(player.SteamID, team, permanent);
+        }
+    }
+
     public void PromptChatInput(IPlayer player,
         string prompt,
         Func<string, bool> validator,
@@ -87,6 +221,7 @@ public partial class MenuService : IDisposable
             OnCancel = onCancel
         };
 
+        _menuApi?.CloseMenu(player);
         _hudApi?.CloseModal(player);
         _hud?.Toast(player, new ToastOptions
         {
@@ -132,66 +267,13 @@ public partial class MenuService : IDisposable
 
     public void OpenMainMenu(IPlayer player)
     {
-        if (_hud == null)
+        if (_menuApi != null)
         {
-            player.SendChat("[red][WeaponSkins][/] Menü sistemi yüklenemedi (PanoramaHud eksik).");
+            OpenMenuApiMainMenu(player);
             return;
         }
 
-        var builder = _hud.Menu($"ws.main.{player.SteamID}", LocalizationService[player].MenuTitle)
-            .Description("Silah, Bıçak ve Eldiven Menüsü");
-
-        if (ItemPermissionService.CanUseWeaponSkins(player.SteamID))
-        {
-            builder.Submenu(LocalizationService[player].MenuTitleSkins, sub => BuildWeaponSkinSubmenu(sub, player));
-        }
-
-        if (ItemPermissionService.CanUseKnifeSkins(player.SteamID))
-        {
-            builder.Submenu(LocalizationService[player].MenuTitleKnifes, sub => BuildKnifeSkinSubmenu(sub, player));
-        }
-
-        if (ItemPermissionService.CanUseGloveSkins(player.SteamID))
-        {
-            builder.Submenu(LocalizationService[player].MenuTitleGloves, sub => BuildGloveSkinSubmenu(sub, player));
-        }
-
-        if (ItemPermissionService.CanUseStickers(player.SteamID))
-        {
-            builder.Submenu(LocalizationService[player].MenuTitleStickers, sub => BuildStickerSubmenu(sub, player));
-        }
-
-        if (ItemPermissionService.CanUseKeychains(player.SteamID))
-        {
-            builder.Submenu(LocalizationService[player].MenuTitleKeychains, sub => BuildKeychainSubmenu(sub, player));
-        }
-
-        if (ItemPermissionService.CanUseWeaponSkins(player.SteamID))
-        {
-            builder.Submenu(LocalizationService[player].MenuTitleSkinProperties, sub => BuildSkinPropertiesSubmenu(sub, player));
-        }
-
-        if (ItemPermissionService.CanUseKnifeSkins(player.SteamID))
-        {
-            builder.Submenu(LocalizationService[player].MenuTitleKnifeProperties, sub => BuildKnifePropertiesSubmenu(sub, player));
-        }
-
-        if (ItemPermissionService.CanUseGloveSkins(player.SteamID))
-        {
-            builder.Submenu(LocalizationService[player].MenuTitleGloveProperties, sub => BuildGlovePropertiesSubmenu(sub, player));
-        }
-
-        if (ItemPermissionService.CanUseAgents(player.SteamID))
-        {
-            builder.Submenu(LocalizationService[player].MenuTitleAgents, sub => BuildAgentSubmenu(sub, player));
-        }
-
-        if (ItemPermissionService.CanUseMusicKits(player.SteamID))
-        {
-            builder.Submenu(LocalizationService[player].MenuTitleMusicKits, sub => BuildMusicKitSubmenu(sub, player));
-        }
-
-        builder.Build().Open(player);
+        player.SendChat("[red][WeaponSkins][/] Menü sistemi yüklenemedi (MenuApi eksik).");
     }
 
     public bool TryGetWeaponInHand(IPlayer player,
@@ -222,18 +304,56 @@ public partial class MenuService : IDisposable
         }
 
         var defIndex = weaponInHand.AttributeManager.Item.ItemDefinitionIndex;
+        var previewTeam = GetPrimaryPreviewTeam(player);
+        if (Api.TryGetWeaponSkin(player.SteamID, previewTeam, defIndex, out dataInHand))
+        {
+            return true;
+        }
         return Api.TryGetWeaponSkin(player.SteamID, player.Controller.Team, defIndex, out dataInHand);
+    }
+
+    public WeaponSkinData GetOrCreateWeaponSkinData(IPlayer player, ushort defIndex)
+    {
+        var team = GetPrimaryPreviewTeam(player);
+        if (Api.TryGetWeaponSkin(player.SteamID, team, defIndex, out var existing) && existing != null)
+        {
+            return existing;
+        }
+        if (Api.TryGetWeaponSkin(player.SteamID, Team.T, defIndex, out existing) && existing != null)
+        {
+            return existing;
+        }
+        if (Api.TryGetWeaponSkin(player.SteamID, Team.CT, defIndex, out existing) && existing != null)
+        {
+            return existing;
+        }
+        return new WeaponSkinData
+        {
+            SteamID = player.SteamID,
+            Team = team,
+            DefinitionIndex = defIndex
+        };
     }
 
     public bool TryGetKnifeDataInHand(IPlayer player,
         [MaybeNullWhen(false)] out KnifeSkinData dataInHand)
     {
+        var previewTeam = GetPrimaryPreviewTeam(player);
+        if (Api.TryGetKnifeSkin(player.SteamID, previewTeam, out dataInHand))
+        {
+            return true;
+        }
         return Api.TryGetKnifeSkin(player.SteamID, player.Controller.Team, out dataInHand);
     }
 
     public bool TryGetGloveDataInHand(IPlayer player,
         [MaybeNullWhen(false)] out GloveData dataInHand)
     {
+        var previewTeam = GetPrimaryPreviewTeam(player);
+        if (Api.TryGetGloveSkin(player.SteamID, previewTeam, out dataInHand))
+        {
+            return true;
+        }
         return Api.TryGetGloveSkin(player.SteamID, player.Controller.Team, out dataInHand);
     }
 
@@ -255,5 +375,6 @@ public partial class MenuService : IDisposable
         _hud?.Dispose();
         _hud = null;
         _hudApi = null;
+        _menuApi = null;
     }
 }

@@ -12,6 +12,11 @@ public partial class MenuService
 {
     public void OpenWeaponSkinMenu(IPlayer player)
     {
+        if (_menuApi != null)
+        {
+            OpenMenuApiWeaponsRootMenu(player);
+            return;
+        }
         if (_hud == null) return;
         var builder = _hud.Menu($"ws.weapons.{player.SteamID}", LocalizationService[player].MenuTitleSkins);
         BuildWeaponSkinSubmenu(builder, player);

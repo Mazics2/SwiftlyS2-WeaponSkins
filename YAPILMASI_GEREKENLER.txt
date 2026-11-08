@@ -1,0 +1,55 @@
+================================================================================
+                 SWIFTLYS2 - WEAPONSKINS (SİLAH & SKİN SİSTEMİ)
+                           YAPILMASI GEREKENLER & ENTEGRASYON
+================================================================================
+Eklenti: SwiftlyS2-WeaponSkins
+Repo: https://github.com/Mazics2/SwiftlyS2-WeaponSkins.git
+
+--------------------------------------------------------------------------------
+1. YAPILAN DÜZELTMELER & ENTEGRASYON
+--------------------------------------------------------------------------------
+[✓] 1. Komut Ayrımı (!ws vs !vs):
+    - `!ws` komutu artık MenuApi'nin 3D ızgarasına kapılmadan doğrudan WeaponSkins'in zengin
+      özelleştirme menüsünü açar (MenuService.MenuApi.cs).
+    - `!vs` veya `!skins` komutu ise 72 kartlık 3D görsel skin seçim tarayıcısını açar.
+    - `!ws` menüsünün en tepesine "3D Görsel Skin Seçiciyi Aç (!vs)" butonu eklendi.
+
+[✓] 2. MenuApi Alt Sayfası Kaydı:
+    - MenuApi'nin "AYARLAR" sekmesi altına "settings:weaponskins" alt sekmesi eklendi.
+    - Oyuncular HUD üzerinden Ayarlar'a girdiklerinde "SİLAH & SKİN AYARLARI" butonuna tıklayarak
+      float, sticker ve takım ayarlarına erişebilir.
+
+[✓] 3. Takım Modu ve Elindeki Silahın Özelleştirilmesi:
+    - Takım Seçimi [Her İki Takım / Sadece T / Sadece CT] aktif.
+    - Oyuncunun elindeki silah tespit edilerek Float, Aşınma, Anahtarlık ve Çıkartma Slot 1-5
+      ayarları sorunsuz işlenmektedir.
+
+[✓] 4. MySQL / SQLite Kalıcılığı:
+    - Oyuncunun seçtiği skinler veritabanına kaydedilir ve oyundan çıkıp girildiğinde hatırlanır.
+    - `!wp` komutuyla veritabanı anlık olarak senkronize edilebilir.
+
+--------------------------------------------------------------------------------
+2. KOMUTLAR
+--------------------------------------------------------------------------------
+* `!ws` : Silah ve skin yönetim menüsünü açar (Takım modu, float, sticker, anahtarlık, bıçak, eldiven).
+* `!vs` veya `!skins` : 3D görsel skin seçim tarayıcısını açar.
+* `!knife` / `!bicak` : Bıçak seçim menüsü.
+* `!gloves` / `!eldiven` : Eldiven seçim menüsü.
+* `!float` : Elindeki silahın float/aşınma ayarını açar.
+* `!sticker` : Çıkartma slotu seçim menüsü.
+* `!keychain` / `!anahtarlik` : Anahtarlık seçim menüsü.
+* `!agents` / `!ajan` : Ajan seçim menüsü.
+* `!wp` : Kendi skin envanterini veritabanından yeniden yükler.
+* `sw_wp_admin <SteamID64>` : Konsoldan belirli bir oyuncunun skinlerini yeniden yükler.
+
+--------------------------------------------------------------------------------
+3. ORTAĞIMIN YAPMASI GEREKENLER (TODO)
+--------------------------------------------------------------------------------
+1. Veritabanı Bağlantısı:
+   - `config.toml` içindeki veritabanı bağlantı bilgilerini kontrol edin (MySQL / SQLite).
+2. Yetki Yapılandırması:
+   - `permissions.json` veya eklenti yetki dosyasından VIP oyuncular için özel bıçak/eldiven
+     kısıtlamalarını yönetebilirsiniz.
+3. Derleme:
+   - `dotnet build -c Release --no-restore -p:NuGetAudit=false` ile derleyebilirsiniz.
+================================================================================

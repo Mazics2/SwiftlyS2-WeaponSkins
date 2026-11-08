@@ -12,6 +12,11 @@ public partial class MenuService
 {
     public void OpenGloveSkinMenu(IPlayer player)
     {
+        if (_menuApi != null)
+        {
+            OpenMenuApiGlovesMenu(player);
+            return;
+        }
         if (_hud == null) return;
         var builder = _hud.Menu($"ws.gloves.{player.SteamID}", LocalizationService[player].MenuTitleGloves);
         BuildGloveSkinSubmenu(builder, player);

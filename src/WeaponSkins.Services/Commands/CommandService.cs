@@ -30,30 +30,122 @@ public partial class CommandService
     public void RegisterCommands()
     {
         Core.Command.RegisterCommand("ws", CommandSkin);
+        Core.Command.RegisterCommand("skins", CommandSkin);
+        Core.Command.RegisterCommand("knife", CommandKnife);
+        Core.Command.RegisterCommand("bicak", CommandKnife);
+        Core.Command.RegisterCommand("gloves", CommandGloves);
+        Core.Command.RegisterCommand("eldiven", CommandGloves);
+        Core.Command.RegisterCommand("float", CommandFloat);
+        Core.Command.RegisterCommand("sticker", CommandSticker);
+        Core.Command.RegisterCommand("keychain", CommandKeychain);
+        Core.Command.RegisterCommand("anahtarlik", CommandKeychain);
+        Core.Command.RegisterCommand("ajan", CommandAgents);
+        Core.Command.RegisterCommand("agents", CommandAgents);
+        Core.Command.RegisterCommand("musickit", CommandMusicKit);
         Core.Command.RegisterCommand("wp", CommandReload);
         Core.Command.RegisterCommand("wp_admin", CommandReloadBySteamId);
     }
 
     private void CommandSkin(ICommandContext context)
     {
-        if (!context.IsSentByPlayer)
+        if (!context.IsSentByPlayer || context.Sender == null)
         {
             context.Reply("This command can only be used by players.");
             return;
         }
 
-        // Open the CS2 Panorama SELECT SKIN menu if MenuApi is loaded
-        var menuApiPlugin = AppDomain.CurrentDomain.GetAssemblies()
-            .Select(a => a.GetType("MenuApi.Plugin", throwOnError: false))
-            .FirstOrDefault(t => t != null);
-        var menuApiInstance = menuApiPlugin?.GetProperty("Instance")?.GetValue(null);
-        if (menuApiInstance != null)
+        MenuService.OpenMainMenu(context.Sender);
+    }
+
+    private void CommandKnife(ICommandContext context)
+    {
+        if (!context.IsSentByPlayer || context.Sender == null) return;
+        MenuService.OpenKnifeSkinMenu(context.Sender);
+    }
+
+    private void CommandGloves(ICommandContext context)
+    {
+        if (!context.IsSentByPlayer || context.Sender == null) return;
+        MenuService.OpenGloveSkinMenu(context.Sender);
+    }
+
+    private void CommandFloat(ICommandContext context)
+    {
+        if (!context.IsSentByPlayer || context.Sender == null) return;
+        if (MenuService.MenuApi != null)
         {
-            context.Sender!.ExecuteCommand("sw_skins");
+            if (MenuService.TryGetWeaponInHand(context.Sender, out var wep) &&
+                Utilities.IsWeaponDefinitionIndex(wep.AttributeManager.Item.ItemDefinitionIndex))
+            {
+                MenuService.OpenMenuApiFloatMenu(context.Sender, wep.AttributeManager.Item.ItemDefinitionIndex);
+            }
+            else
+            {
+                MenuService.OpenMenuApiSelectWeaponForCustomizeMenu(context.Sender);
+            }
             return;
         }
+        MenuService.OpenSkinPropertiesMenu(context.Sender);
+    }
 
-        MenuService.OpenMainMenu(context.Sender!);
+    private void CommandSticker(ICommandContext context)
+    {
+        if (!context.IsSentByPlayer || context.Sender == null) return;
+        if (MenuService.MenuApi != null)
+        {
+            if (MenuService.TryGetWeaponInHand(context.Sender, out var wep) &&
+                Utilities.IsWeaponDefinitionIndex(wep.AttributeManager.Item.ItemDefinitionIndex))
+            {
+                MenuService.OpenMenuApiStickerSlotsMenu(context.Sender, wep.AttributeManager.Item.ItemDefinitionIndex);
+            }
+            else
+            {
+                MenuService.OpenMenuApiSelectWeaponForCustomizeMenu(context.Sender);
+            }
+            return;
+        }
+        MenuService.OpenStickerMenu(context.Sender);
+    }
+
+    private void CommandKeychain(ICommandContext context)
+    {
+        if (!context.IsSentByPlayer || context.Sender == null) return;
+        if (MenuService.MenuApi != null)
+        {
+            if (MenuService.TryGetWeaponInHand(context.Sender, out var wep) &&
+                Utilities.IsWeaponDefinitionIndex(wep.AttributeManager.Item.ItemDefinitionIndex))
+            {
+                MenuService.OpenMenuApiKeychainMenu(context.Sender, wep.AttributeManager.Item.ItemDefinitionIndex);
+            }
+            else
+            {
+                MenuService.OpenMenuApiSelectWeaponForCustomizeMenu(context.Sender);
+            }
+            return;
+        }
+        MenuService.OpenKeychainMenu(context.Sender);
+    }
+
+    private void CommandAgents(ICommandContext context)
+    {
+        if (!context.IsSentByPlayer || context.Sender == null) return;
+        if (MenuService.MenuApi != null)
+        {
+            MenuService.OpenMenuApiAgentsMenu(context.Sender);
+            return;
+        }
+        MenuService.OpenAgentMenu(context.Sender);
+    }
+
+    private void CommandMusicKit(ICommandContext context)
+    {
+        if (!context.IsSentByPlayer || context.Sender == null) return;
+        if (MenuService.MenuApi != null)
+        {
+            MenuService.OpenMenuApiMusicKitsMenu(context.Sender);
+            return;
+        }
+        MenuService.OpenMusicKitMenu(context.Sender);
     }
 
     // Server-console/RCON only. Reloads the same data as !wp for one connected player.

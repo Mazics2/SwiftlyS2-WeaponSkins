@@ -97,6 +97,7 @@ public partial class WeaponSkins : BasePlugin
 
         if (_menuApi != null)
         {
+            _provider.GetRequiredService<MenuService>().SetMenuApi(_menuApi);
             RegisterMenuApiSubPages();
         }
     }
@@ -125,8 +126,12 @@ public partial class WeaponSkins : BasePlugin
             try
             {
                 _menuApi = interfaceManager.GetSharedInterface<IMenuApi>("MenuApi");
+                if (_provider != null)
+                {
+                    _provider.GetService<MenuService>()?.SetMenuApi(_menuApi);
+                }
                 RegisterMenuApiSubPages();
-                Core.Logger.LogInformation("[WeaponSkins] MenuApi shared interface resolved.");
+                Core.Logger.LogInformation("[WeaponSkins] SwiftlyS2-MenuApi shared interface resolved.");
             }
             catch (Exception ex)
             {
@@ -136,24 +141,11 @@ public partial class WeaponSkins : BasePlugin
         else
         {
             _menuApi = null;
-        }
-
-        if (interfaceManager.HasSharedInterface("PanoramaHud"))
-        {
-            _hudApi = interfaceManager.GetSharedInterface<IPanoramaHudApi>("PanoramaHud");
             if (_provider != null)
             {
-                var menuService = _provider.GetService<MenuService>();
-                if (menuService != null && _hudApi != null)
-                {
-                    menuService.SetPanoramaHud(_hudApi);
-                }
+                _provider.GetService<MenuService>()?.SetMenuApi(null);
             }
-            Core.Logger.LogInformation("[WeaponSkins] PanoramaHud shared interface resolved.");
-        }
-        else
-        {
-            Core.Logger.LogWarning("[WeaponSkins] PanoramaHud shared interface not found on server.");
+            Core.Logger.LogWarning("[WeaponSkins] MenuApi shared interface not found on server.");
         }
     }
 
@@ -161,68 +153,127 @@ public partial class WeaponSkins : BasePlugin
     {
         if (_menuApi == null || _provider == null) return;
 
-        var permService = _provider.GetService<ItemPermissionService>();
-
-        _menuApi.RegisterSubPage(new MenuSubPageRegistration
+        try
         {
-            ParentPageId = "settings",
-            SubPageId = "ws_customizer",
-            Title = "SKIN AYARLARI (FLOAT/STICKER)",
-            Order = 15,
-            CanAccess = p => permService == null ||
-                             permService.CanUseWeaponSkins(p.SteamID) ||
-                             permService.CanUseKnifeSkins(p.SteamID) ||
-                             permService.CanUseMusicKits(p.SteamID),
-            Commands = ["wsmenu", "skincfg"],
-            PopulateItems = (player, builder) => PopulateSkinSettingsSubPage(player, builder, permService)
+            _menuApi.RegisterSubPage(new MenuSubPageRegistration
+            {
+                ParentPageId = "settings",
+                SubPageId = "weaponskins",
+                Title = "SİLAH & SKİN AYARLARI (!ws)",
+                Order = 10,
+                Commands = ["wsmenu", "skincfg"],
+                PopulateItems = (player, builder) =>
+                {
+                    builder.AddHeader("SİLAH & SKİN AYARLARI (FLOAT, STICKER, TAKIM)", "ws_sec");
+                    builder.AddActionButton(
+                        "Skin Yönetim Menüsünü Aç (!ws)",
+                        "YÖNETİM",
+                        ctx =>
+                        {
+                            var menuService = _provider?.GetService<MenuService>();
+                            menuService?.OpenMainMenu(ctx.Player);
+                        },
+                        description: "Takım seçimi, float, aşınma, anahtarlık ve çıkartmaları özelleştirin",
+                        closeOnSelect: false);
+
+                    builder.AddActionButton(
+                        "Görsel Skin Seçiciyi Aç (!vs)",
+                        "SKIN SEÇİCİ",
+                        ctx =>
+                        {
+                            _menuApi?.OpenPage(ctx.Player, "skins");
+                        },
+                        description: "Görsel kart ızgarasında tüm CS2 silah kaplamalarını seçin",
+                        closeOnSelect: false);
+                }
+            });
+            Core.Logger.LogInformation("[WeaponSkins] MenuApi sub-page 'weaponskins' başarıyla kaydedildi.");
+        }
+        catch (Exception ex)
+        {
+            Core.Logger.LogError(ex, "[WeaponSkins] MenuApi sub-page kaydedilirken hata!");
+        }
+
+        Core.Command.RegisterCommand("wsmenu", ctx =>
+        {
+            if (ctx.IsSentByPlayer && ctx.Sender != null)
+            {
+                OpenSkinSettingsMenu(ctx.Sender);
+            }
+        });
+
+        Core.Command.RegisterCommand("skincfg", ctx =>
+        {
+            if (ctx.IsSentByPlayer && ctx.Sender != null)
+            {
+                OpenSkinSettingsMenu(ctx.Sender);
+            }
         });
     }
 
-    private void PopulateSkinSettingsSubPage(IPlayer player, MenuApi.API.IMenuBuilder builder, ItemPermissionService? perms)
+    public void OpenSkinSettingsMenu(IPlayer player)
     {
-        builder.AddHeader("SKIN VE ENVANTER YÖNETİMİ", "ws_main");
-
-        bool canWp = perms?.CanUseWeaponSkins(player.SteamID) ?? true;
-        bool canKnife = perms?.CanUseKnifeSkins(player.SteamID) ?? true;
-        bool canGloves = perms?.CanUseGloveSkins(player.SteamID) ?? true;
-        bool canMusic = perms?.CanUseMusicKits(player.SteamID) ?? true;
-        bool canStickers = perms?.CanUseStickers(player.SteamID) ?? true;
-        bool canKeychains = perms?.CanUseKeychains(player.SteamID) ?? true;
-
-        builder.AddInfo("Silah Skin Yetkisi", canWp ? "✓ AKTİF" : "✗ YETKİ GEREKİR");
-        builder.AddInfo("Bıçak Skin Yetkisi", canKnife ? "✓ AKTİF" : "✗ YETKİ GEREKİR");
-        builder.AddInfo("Eldiven Yetkisi", canGloves ? "✓ AKTİF" : "✗ YETKİ GEREKİR");
-        builder.AddInfo("Müzik Kiti Yetkisi", canMusic ? "✓ AKTİF" : "✗ YETKİ GEREKİR");
-        builder.AddInfo("Çıkartma (Sticker) Yetkisi", canStickers ? "✓ AKTİF" : "✗ YETKİ GEREKİR");
-        builder.AddInfo("Anahtarlık (Keychain) Yetkisi", canKeychains ? "✓ AKTİF" : "✗ YETKİ GEREKİR");
-
-        builder.AddHeader("ENVANTER VE VERİTABANI İŞLEMLERİ", "ws_actions");
-
-        builder.AddActionButton(
-            "Envanterimi Veritabanından Yeniden Yükle (!wp)",
-            "YENİDEN YÜKLE",
-            ctx =>
+        if (_provider != null)
+        {
+            var menuService = _provider.GetService<MenuService>();
+            if (menuService != null && _menuApi != null)
             {
-                if (_provider != null)
-                {
-                    var storageService = _provider.GetService<StorageService>();
-                    if (storageService != null)
-                    {
-                        storageService.ReloadPlayer(ctx.Player, msg => ctx.Player.SendMessage(MessageType.Chat, $" \x04[WeaponSkins]\x01 {msg}"));
-                    }
-                }
-            },
-            description: "Skinlerinizde veya çıkartmalarınızda gecikme olursa anında veritabanıyla senkronize eder",
-            closeOnSelect: false);
+                menuService.SetMenuApi(_menuApi);
+                menuService.OpenMainMenu(player);
+                return;
+            }
+        }
+        if (_menuApi == null || _provider == null) return;
 
-        builder.AddActionButton(
-            "Skin Seçiciyi Aç (3D Weapon Grid)",
-            "SKIN SEÇİCİ",
-            ctx =>
+        var permService = _provider.GetService<ItemPermissionService>();
+        if (permService != null &&
+            !permService.CanUseWeaponSkins(player.SteamID) &&
+            !permService.CanUseKnifeSkins(player.SteamID) &&
+            !permService.CanUseMusicKits(player.SteamID))
+        {
+            player.SendMessage(MessageType.Chat, " \x04[WeaponSkins]\x01 Bu menüye erişim yetkiniz yok.");
+            return;
+        }
+
+        var builder = _menuApi.CreateBuilder("ws_settings", "SKIN AYARLARI (FLOAT/STICKER)")
+            .SetTheme(MenuTheme.Blue)
+            .SetItemsPerPage(7)
+            .EnableSounds(true)
+            .EnableSlotSelection(true);
+
+        builder.AddText("=== SKIN VE ENVANTER YONETIMI ===");
+
+        bool canWp = permService?.CanUseWeaponSkins(player.SteamID) ?? true;
+        bool canKnife = permService?.CanUseKnifeSkins(player.SteamID) ?? true;
+        bool canGloves = permService?.CanUseGloveSkins(player.SteamID) ?? true;
+        bool canMusic = permService?.CanUseMusicKits(player.SteamID) ?? true;
+        bool canStickers = permService?.CanUseStickers(player.SteamID) ?? true;
+        bool canKeychains = permService?.CanUseKeychains(player.SteamID) ?? true;
+
+        builder.AddText($"Silah Skin: {(canWp ? "✓ AKTİF" : "✗ YETKİ GEREKİR")}");
+        builder.AddText($"Bıçak Skin: {(canKnife ? "✓ AKTİF" : "✗ YETKİ GEREKİR")}");
+        builder.AddText($"Eldiven: {(canGloves ? "✓ AKTİF" : "✗ YETKİ GEREKİR")}");
+        builder.AddText($"Müzik Kiti: {(canMusic ? "✓ AKTİF" : "✗ YETKİ GEREKİR")}");
+        builder.AddText($"Çıkartma: {(canStickers ? "✓ AKTİF" : "✗ YETKİ GEREKİR")}");
+        builder.AddText($"Anahtarlık: {(canKeychains ? "✓ AKTİF" : "✗ YETKİ GEREKİR")}");
+
+        builder.AddSpacer();
+        builder.AddText("=== ISLEMLER ===");
+
+        builder.AddItem("Envanterimi Veritabanından Yeniden Yükle (!wp)", ctx =>
+        {
+            if (_provider != null)
             {
-                _menuApi?.OpenPage(ctx.Player, "skins");
-            },
-            description: "Görsel kart ızgarasında silah modellerini ve kaplamalarını seçin",
-            closeOnSelect: false);
+                var storageService = _provider.GetService<StorageService>();
+                storageService?.ReloadPlayer(ctx.Player, msg => ctx.Player.SendMessage(MessageType.Chat, $" \x04[WeaponSkins]\x01 {msg}"));
+            }
+        }, enabled: true, closeOnSelect: false);
+
+        builder.AddItem("Skin Seçiciyi Aç (3D Weapon Grid)", ctx =>
+        {
+            ctx.Player.ExecuteCommand("sw_skins");
+        }, enabled: true, closeOnSelect: true);
+
+        builder.Build().Open(player);
     }
 }

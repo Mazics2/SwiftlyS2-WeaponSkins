@@ -12,6 +12,11 @@ public partial class MenuService
 {
     public void OpenKnifeSkinMenu(IPlayer player)
     {
+        if (_menuApi != null)
+        {
+            OpenMenuApiKnivesMenu(player);
+            return;
+        }
         if (_hud == null) return;
         var builder = _hud.Menu($"ws.knives.{player.SteamID}", LocalizationService[player].MenuTitleKnifes);
         BuildKnifeSkinSubmenu(builder, player);
