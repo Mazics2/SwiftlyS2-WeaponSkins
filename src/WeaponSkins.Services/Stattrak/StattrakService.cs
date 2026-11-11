@@ -1,12 +1,13 @@
 using Microsoft.Extensions.Logging;
 
-using Mysqlx.Session;
-
 using SwiftlyS2.Shared;
 using SwiftlyS2.Shared.GameEventDefinitions;
 using SwiftlyS2.Shared.Misc;
 
+using WeaponSkins.Database;
+using WeaponSkins.Extensions;
 using WeaponSkins.Services;
+using WeaponSkins.Shared;
 
 namespace WeaponSkins;
 
@@ -14,20 +15,17 @@ public class StattrakService
 {
     private ISwiftlyCore Core { get; init; }
     private DataService DataService { get; init; }
-    private WeaponSkinAPI WeaponSkinAPI { get; init; }
-    private IInventoryUpdateService InventoryUpdateService { get; init; }
+    private StorageService StorageService { get; init; }
     private ILogger<StattrakService> Logger { get; init; }
 
     public StattrakService(ISwiftlyCore core,
         DataService dataService,
-        WeaponSkinAPI weaponSkinAPI,
-        IInventoryUpdateService inventoryService,
+        StorageService storageService,
         ILogger<StattrakService> logger)
     {
         Core = core;
         DataService = dataService;
-        WeaponSkinAPI = weaponSkinAPI;
-        InventoryUpdateService = inventoryService;
+        StorageService = storageService;
         Logger = logger;
 
         Core.GameEvent.HookPost<EventPlayerDeath>(OnPlayerDeath);
@@ -36,15 +34,25 @@ public class StattrakService
     public HookResult OnPlayerDeath(EventPlayerDeath @event)
     {
         var attacker = Core.PlayerManager.GetPlayer(@event.Attacker);
-        if (attacker is null || attacker is { IsValid: false, IsFakeClient: false }) return HookResult.Continue;
+        if (attacker is not { IsValid: true, IsFakeClient: false } || !attacker.IsAlive())
+        {
+            return HookResult.Continue;
+        }
 
         if (!@event.UserIdController.IsValid) return HookResult.Continue;
+        if (@event.UserId == @event.Attacker) return HookResult.Continue;
 
-        var weaponHandle = attacker.PlayerPawn!.WeaponServices!.ActiveWeapon;
-        if (!weaponHandle.IsValid) return HookResult.Continue;
+        var weaponServices = attacker.PlayerPawn?.WeaponServices;
+        if (weaponServices is not { IsValid: true }) return HookResult.Continue;
 
-        var weapon = weaponHandle.Value!;
-        var definitionIndex = weapon!.AttributeManager.Item.ItemDefinitionIndex;
+        var weaponHandle = weaponServices.ActiveWeapon;
+        if (!weaponHandle.IsValid || weaponHandle.Value is not { IsValid: true } weapon)
+        {
+            return HookResult.Continue;
+        }
+
+        var item = weapon.AttributeManager.Item;
+        var definitionIndex = item.ItemDefinitionIndex;
         var team = attacker.Controller.Team;
 
         if (Utilities.IsWeaponDefinitionIndex(definitionIndex))
@@ -52,27 +60,82 @@ public class StattrakService
             if (DataService.WeaponDataService.TryGetSkin(attacker.SteamID, team, definitionIndex, out var skin))
             {
                 if (skin.Quality != EconItemQuality.StatTrak) return HookResult.Continue;
+
                 skin.StattrakCount++;
-                weapon.AttributeManager.Item.AttributeList.SetOrAddAttribute("kill eater",
-                    BitConverter.Int32BitsToSingle(skin.StattrakCount));
-                weapon.AttributeManager.Item.AttributeList.SetOrAddAttribute("kill eater score type", 0);
-                WeaponSkinAPI.SetWeaponSkins([skin], true);
+                var countBits = BitConverter.Int32BitsToSingle(skin.StattrakCount);
+                item.AttributeList.SetOrAddAttribute("kill eater", countBits);
+                item.AttributeList.SetOrAddAttribute("kill eater score type", 0);
+                item.NetworkedDynamicAttributes.SetOrAddAttribute("kill eater", countBits);
+                item.NetworkedDynamicAttributes.SetOrAddAttribute("kill eater score type", 0);
+                weapon.FallbackStatTrak = skin.StattrakCount;
+
+                item.AttributeListUpdated();
+                item.NetworkedDynamicAttributesUpdated();
+                weapon.FallbackStatTrakUpdated();
+
+                DataService.WeaponDataService.StoreSkin(skin);
+                PersistWeaponStatTrak(skin.DeepClone());
             }
         }
-
-        if (Utilities.IsKnifeDefinitionIndex(definitionIndex))
+        else if (Utilities.IsKnifeDefinitionIndex(definitionIndex))
         {
             if (DataService.KnifeDataService.TryGetKnife(attacker.SteamID, team, out var knife))
             {
                 if (knife.Quality != EconItemQuality.StatTrak) return HookResult.Continue;
+
                 knife.StattrakCount++;
-                weapon.AttributeManager.Item.AttributeList.SetOrAddAttribute("kill eater",
-                    BitConverter.Int32BitsToSingle(knife.StattrakCount));
-                weapon.AttributeManager.Item.AttributeList.SetOrAddAttribute("kill eater score type", 0);
-                WeaponSkinAPI.SetKnifeSkins([knife], true);
+                var countBits = BitConverter.Int32BitsToSingle(knife.StattrakCount);
+                item.AttributeList.SetOrAddAttribute("kill eater", countBits);
+                item.AttributeList.SetOrAddAttribute("kill eater score type", 0);
+                item.NetworkedDynamicAttributes.SetOrAddAttribute("kill eater", countBits);
+                item.NetworkedDynamicAttributes.SetOrAddAttribute("kill eater score type", 0);
+                weapon.FallbackStatTrak = knife.StattrakCount;
+
+                item.AttributeListUpdated();
+                item.NetworkedDynamicAttributesUpdated();
+                weapon.FallbackStatTrakUpdated();
+
+                DataService.KnifeDataService.StoreKnife(knife);
+                PersistKnifeStatTrak(knife.DeepClone());
             }
         }
 
         return HookResult.Continue;
+    }
+
+    private void PersistWeaponStatTrak(WeaponSkinData skin)
+    {
+        var storage = StorageService.Get();
+        if (storage is EmptyStorageProvider) return;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await storage.StoreSkinsAsync([skin]);
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError(ex, "Error saving StatTrak weapon kill count");
+            }
+        });
+    }
+
+    private void PersistKnifeStatTrak(KnifeSkinData knife)
+    {
+        var storage = StorageService.Get();
+        if (storage is EmptyStorageProvider) return;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await storage.StoreKnifesAsync([knife]);
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError(ex, "Error saving StatTrak knife kill count");
+            }
+        });
     }
 }

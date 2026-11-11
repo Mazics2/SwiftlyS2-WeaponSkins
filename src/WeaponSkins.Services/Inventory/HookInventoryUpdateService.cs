@@ -3,8 +3,10 @@ using FluentMigrator.Runner;
 using Microsoft.Extensions.Logging;
 
 using SwiftlyS2.Shared;
+using SwiftlyS2.Shared.Events;
 using SwiftlyS2.Shared.GameEventDefinitions;
 using SwiftlyS2.Shared.Misc;
+using SwiftlyS2.Shared.Natives;
 using SwiftlyS2.Shared.Players;
 using SwiftlyS2.Shared.SchemaDefinitions;
 
@@ -26,7 +28,6 @@ public class HookInventoryUpdateService : IInventoryUpdateService, IDisposable
     private readonly Dictionary<ulong, (int MusicKitId, ushort? InventoryMusicId)> _originalMusicKits = new();
     private ISwiftlyCore Core { get; }
     private PlayerService PlayerService { get; }
-    private NativeService NativeService { get; }
     private ILogger<HookInventoryUpdateService> Logger { get; }
     private ItemPermissionService ItemPermissionService { get; }
     private WeaponSkinGetterAPI Api { get; }
@@ -36,7 +37,6 @@ public class HookInventoryUpdateService : IInventoryUpdateService, IDisposable
     public HookInventoryUpdateService(ISwiftlyCore core,
         WeaponSkinGetterAPI api,
         PlayerService playerService,
-        NativeService nativeService,
         ILogger<HookInventoryUpdateService> logger,
         ItemPermissionService itemPermissionService,
         DataService dataService,
@@ -46,26 +46,21 @@ public class HookInventoryUpdateService : IInventoryUpdateService, IDisposable
         Core = core;
         Api = api;
         PlayerService = playerService;
-        NativeService = nativeService;
         Logger = logger;
         ItemPermissionService = itemPermissionService;
         DataService = dataService;
         EconService = econService;
 
-        NativeService.OnGiveNamedItemPost += OnGiveNamedItemPost;
+        Core.Event.OnEntityCreated += OnEntityCreated;
         Core.GameEvent.HookPost<EventPlayerSpawn>(OnPlayerSpawn);
         Core.GameEvent.HookPre<EventRoundStart>(OnRoundStart);
         Core.GameEvent.HookPre<EventRoundMvp>(OnRoundMvp);
 
-        Core.Event.OnClientDisconnected += (@event) =>
-        {
-            var player = Core.PlayerManager.GetPlayer(@event.PlayerId);
-            if (player != null) _originalMusicKits.Remove(player.SessionId);
-        };
+        Core.Event.OnClientDisconnected += OnClientDisconnected;
 
         foreach (var player in Core.PlayerManager.GetAllPlayers())
         {
-            if (player.Controller is { IsValid: true, InventoryServices.IsValid: true } controller)
+            if (player.Controller is { IsValid: true, InventoryServices.IsValid: true })
             {
                 ApplyPlayerWeapons(player);
                 ApplyPlayerGlove(player);
@@ -73,66 +68,41 @@ public class HookInventoryUpdateService : IInventoryUpdateService, IDisposable
         }
     }
 
-    private void OnGiveNamedItemPost(CCSPlayer_ItemServices services,
-        CBasePlayerWeapon weapon)
+    private void OnClientDisconnected(IOnClientDisconnectedEvent @event)
+    {
+        var player = Core.PlayerManager.GetPlayer(@event.PlayerId);
+        if (player != null) _originalMusicKits.Remove(player.SessionId);
+    }
+
+    // Only new entities fire this, so a weapon picked up off the ground keeps its previous owner's finish.
+    private void OnEntityCreated(IOnEntityCreatedEvent @event)
     {
         try
         {
-            if (weapon is not { IsValid: true }) return;
-
-            ulong steamId = 0;
-            Team team = Team.None;
-            CCSPlayerPawn? ownerPawn = null;
-
-            if (weapon.OwnerEntity.IsValid && weapon.OwnerEntity.Value is { IsValid: true } wepOwner)
-            {
-                ownerPawn = wepOwner.As<CCSPlayerPawn>();
-            }
-
-            if (ownerPawn == null || !ownerPawn.IsValid)
-            {
-                foreach (var p in Core.PlayerManager.GetAllPlayers())
-                {
-                    if (p.PlayerPawn is { IsValid: true } pawn &&
-                        pawn.ItemServices is { IsValid: true } isvc &&
-                        isvc.Address == services.Address)
-                    {
-                        ownerPawn = pawn;
-                        steamId = p.SteamID;
-                        team = p.Controller?.Team ?? Team.None;
-                        break;
-                    }
-                }
-            }
-            else if (ownerPawn.Controller.IsValid && ownerPawn.Controller.Value is { IsValid: true } ctrl)
-            {
-                steamId = ctrl.SteamID;
-                team = ctrl.Team;
-            }
-
-            if (steamId == 0 || team == Team.None) return;
-            if (weapon.Identity is not { IsValid: true } identity) return;
-            var weaponHandle = identity.EntityHandle;
-
-            // GiveItem can still initialize attributes after this hook. Apply once it has finished.
-            Core.Scheduler.NextTick(() =>
-            {
-                try
-                {
-                    var currentWeapon = weaponHandle.Value?.As<CBasePlayerWeapon>();
-                    if (currentWeapon is not { IsValid: true }) return;
-
-                    ApplyWeaponSkin(steamId, team, currentWeapon);
-                }
-                catch (Exception error)
-                {
-                    Logger.LogError(error, "Error applying a newly given weapon");
-                }
-            });
+            var entity = @event.Entity;
+            if (!entity.DesignerName.StartsWith("weapon_", StringComparison.Ordinal)) return;
+            var handle = Core.EntitySystem.GetRefEHandle(entity.As<CBasePlayerWeapon>());
+            Core.Scheduler.NextTick(() => ApplyGivenWeapon(handle));
         }
         catch (Exception e)
         {
-            Logger.LogError(e, "Error in GiveNamedItemPost");
+            Logger.LogError(e, "Error in OnEntityCreated");
+        }
+    }
+
+    private void ApplyGivenWeapon(CHandle<CBasePlayerWeapon> handle)
+    {
+        try
+        {
+            if (!handle.IsValid || handle.Value is not { IsValid: true } weapon) return;
+            if (weapon.OwnerEntity.Value?.As<CCSPlayerPawn>() is not { IsValid: true } owner) return;
+            if (owner.Controller.Value is not { IsValid: true } controller) return;
+            if (controller.SteamID == 0 || controller.Team == Team.None) return;
+            ApplyWeaponSkin(controller.SteamID, controller.Team, weapon);
+        }
+        catch (Exception error)
+        {
+            Logger.LogError(error, "Error applying a newly given weapon");
         }
     }
 
@@ -170,27 +140,30 @@ public class HookInventoryUpdateService : IInventoryUpdateService, IDisposable
     {
         IPlayer? player = @event.UserIdPlayer;
 
-        if (player == null) return HookResult.Continue;
+        if (player is not { IsValid: true, IsFakeClient: false }) return HookResult.Continue;
 
         Core.Scheduler.NextTick(() =>
         {
-            ApplyPlayerWeapons(player);
             ApplyPlayerGlove(player);
             ApplyPlayerAgent(player);
-            if (Api.TryGetKnifeSkin(player.SteamID, player.Controller.Team, out var knife) && Utilities.IsKnifeDefinitionIndex(knife.DefinitionIndex))
-            {
-                player.RegiveKnife(selectKnife: false);
-            }
+            ApplyPlayerMusicKit(player);
         });
 
-        Core.Scheduler.DelayBySeconds(0.15f, () =>
+        Core.Scheduler.DelayBySeconds(0.1f, () =>
         {
-            ApplyPlayerWeapons(player);
             ApplyPlayerGlove(player);
             ApplyPlayerAgent(player);
         });
 
         return HookResult.Continue;
+    }
+
+    private void ApplyPlayerMusicKit(IPlayer player)
+    {
+        if (player.IsValid && DataService.MusicKitDataService.TryGetMusicKit(player.SteamID, out var musicKit))
+        {
+            UpdateMusicKit(player.SteamID, musicKit);
+        }
     }
 
 
@@ -218,8 +191,9 @@ public class HookInventoryUpdateService : IInventoryUpdateService, IDisposable
         {
             if (!player.IsAlive()) return;
 
-            var pawn = player.PlayerPawn!;
-            var current = pawn.CBodyComponent!.SceneNode!.GetSkeletonInstance()
+            var pawn = player.PlayerPawn;
+            if (pawn is not { IsValid: true } || pawn.CBodyComponent?.SceneNode is not { } sceneNode) return;
+            var current = sceneNode.GetSkeletonInstance()
                 .ModelState
                 .ModelName;
             DataService.AgentDataService.CaptureDefaultModel(player.SteamID, player.Controller.Team, current);
@@ -239,7 +213,7 @@ public class HookInventoryUpdateService : IInventoryUpdateService, IDisposable
 
                     Core.Scheduler.NextTick(() =>
                     {
-                        if (!player.IsAlive()) return;
+                        if (!player.IsAlive() || !pawn.IsValid) return;
                         pawn.SetModel(modelPath);
                     });
                 }
@@ -256,7 +230,7 @@ public class HookInventoryUpdateService : IInventoryUpdateService, IDisposable
 
                 Core.Scheduler.NextTick(() =>
                 {
-                    if (!player.IsAlive()) return;
+                    if (!player.IsAlive() || !pawn.IsValid) return;
                     pawn.SetModel(defaultModel);
                 });
             }
@@ -572,19 +546,22 @@ public class HookInventoryUpdateService : IInventoryUpdateService, IDisposable
     public void ApplyKnifeAttributes(CBasePlayerWeapon weapon,
         KnifeSkinData knife)
     {
-        WeaponAppearance.Apply(weapon, knife);
-        try
+        if (weapon.AttributeManager.Item.ItemDefinitionIndex != knife.DefinitionIndex)
         {
-            weapon.AcceptInput("ChangeSubclass", knife.DefinitionIndex.ToString());
+            try
+            {
+                weapon.AcceptInput("ChangeSubclass", knife.DefinitionIndex.ToString());
+            }
+            catch { }
         }
-        catch { }
+        WeaponAppearance.Apply(weapon, knife);
     }
 
     private void ApplyGlove(IPlayer player,
         GloveData glove)
     {
-        if (!player.IsAlive()) return;
-        ApplyGlove(player.PlayerPawn!, glove);
+        if (!player.IsAlive() || player.PlayerPawn is not { IsValid: true } pawn) return;
+        ApplyGlove(pawn, glove);
     }
 
     private void ApplyGlove(IPlayer player,
@@ -599,19 +576,35 @@ public class HookInventoryUpdateService : IInventoryUpdateService, IDisposable
     {
         Core.Scheduler.NextTick(() =>
         {
+            if (!pawn.IsValid) return;
             var econGloves = pawn.EconGloves;
+            var equipped = glove.DefinitionIndex != 0;
+            var itemId = equipped ? (ulong)Random.Shared.NextInt64(1, long.MaxValue) : 0;
             econGloves.ItemDefinitionIndex = glove.DefinitionIndex;
+            econGloves.ItemID = itemId;
+            econGloves.ItemIDLow = (uint)itemId;
+            econGloves.ItemIDHigh = (uint)(itemId >> 32);
+            econGloves.AccountID = equipped ? (uint)glove.SteamID : 0;
             econGloves.NetworkedDynamicAttributes.SetOrAddAttribute("set item texture prefab", glove.Paintkit);
             econGloves.NetworkedDynamicAttributes.SetOrAddAttribute("set item texture seed", glove.PaintkitSeed);
             econGloves.NetworkedDynamicAttributes.SetOrAddAttribute("set item texture wear", glove.PaintkitWear);
             econGloves.AttributeList.SetOrAddAttribute("set item texture prefab", glove.Paintkit);
             econGloves.AttributeList.SetOrAddAttribute("set item texture seed", glove.PaintkitSeed);
             econGloves.AttributeList.SetOrAddAttribute("set item texture wear", glove.PaintkitWear);
-            econGloves.Initialized = true;
+            econGloves.Initialized = equipped;
+            econGloves.ItemDefinitionIndexUpdated();
+            econGloves.ItemIDLowUpdated();
+            econGloves.ItemIDHighUpdated();
+            econGloves.AccountIDUpdated();
+            econGloves.InitializedUpdated();
+            econGloves.AttributeListUpdated();
+            econGloves.NetworkedDynamicAttributesUpdated();
+            pawn.EconGlovesChanged++;
+            pawn.EconGlovesChangedUpdated();
             pawn.AcceptInput("SetBodygroup", "first_or_third_person,0");
             Core.Scheduler.DelayBySeconds(0.2f, () =>
             {
-                pawn.AcceptInput("SetBodygroup", "first_or_third_person,1");
+                if (pawn.IsValid) pawn.AcceptInput("SetBodygroup", "first_or_third_person,1");
             });
         });
     }
@@ -699,6 +692,8 @@ public class HookInventoryUpdateService : IInventoryUpdateService, IDisposable
 
     public void Dispose()
     {
+        Core.Event.OnEntityCreated -= OnEntityCreated;
+        Core.Event.OnClientDisconnected -= OnClientDisconnected;
         foreach (var sessionId in _originalMusicKits.Keys.ToArray())
         {
             var player = Core.PlayerManager.GetPlayerFromSessionId(sessionId);
